@@ -12,7 +12,10 @@ __pycache__/
 .idea/
 
 # Generated LockLab data
-runs/
+runs/*
+!runs/.gitkeep
+outputs/*
+!outputs/.gitkeep
 results/
 artifacts/
 

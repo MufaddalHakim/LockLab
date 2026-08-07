@@ -12,11 +12,12 @@ class Tool:
     name: str
     command: str
     version_args: tuple[str, ...] = ("--version",)
+    required: bool = False
 
 
 TOOLS = (
     Tool("Git", "git"),
-    Tool("Yosys", "yosys", ("-V",)),
+    Tool("Yosys", "yosys", ("-V",), required=True),
     Tool("Icarus Verilog compiler", "iverilog", ("-V",)),
     Tool("Icarus Verilog runtime", "vvp", ("-V",)),
     Tool("EQY", "eqy"),
@@ -56,24 +57,32 @@ def run_doctor() -> int:
     print(f"Platform: {platform.platform()}")
     print()
 
-    missing_tools: list[str] = []
+    missing_required: list[str] = []
+    missing_optional: list[str] = []
 
     for tool in TOOLS:
         version = get_version(tool)
-        status = "PASS" if version != "NOT FOUND" else "MISSING"
+        if version == "NOT FOUND":
+            status = "MISSING"
+        elif version.startswith("ERROR:"):
+            status = "ERROR"
+        else:
+            status = "PASS"
 
         print(f"[{status:7}] {tool.name}: {version}")
 
-        if version == "NOT FOUND":
-            missing_tools.append(tool.name)
+        if status != "PASS" and tool.required:
+            missing_required.append(tool.name)
+        elif status != "PASS":
+            missing_optional.append(tool.name)
 
     print()
 
-    if missing_tools:
-        print("Some tools are missing.")
-        print("This is expected at the beginning of the project.")
-        print("Missing:", ", ".join(missing_tools))
+    if missing_required:
+        print("Required tools are missing:", ", ".join(missing_required))
         return 1
 
     print("All required tools were found.")
+    if missing_optional:
+        print("Optional tools not found:", ", ".join(missing_optional))
     return 0
