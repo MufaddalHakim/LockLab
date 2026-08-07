@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -56,3 +57,23 @@ def test_cli_locks_and_validates_bench(tmp_path: Path) -> None:
 
     assert validated.returncode == 0, validated.stderr
     assert "PASS: circuits matched for 32 vectors" in validated.stdout
+
+    if shutil.which("yices-sat") is not None:
+        attacked = subprocess.run(
+            (
+                sys.executable,
+                "-m",
+                "locklab",
+                "attack",
+                "sat",
+                str(locked_path),
+                str(C17_BENCH),
+            ),
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert attacked.returncode == 0, attacked.stderr
+        assert "Recovered key:" in attacked.stdout
+        assert "Validation: PASS" in attacked.stdout

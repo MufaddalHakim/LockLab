@@ -4,9 +4,9 @@ LockLab is a command-line tool for experimenting with combinational logic
 locking. It reads Verilog or BENCH circuits, shows circuit information, inserts
 logic-locking gates, and validates candidate keys.
 
-The current version implements Random Logic Locking (RLL). Oracle-guided SAT
-attacks and additional locking schemes will be added on top of the same small
-circuit model.
+The current version implements Random Logic Locking (RLL) and an oracle-guided
+SAT attack. Additional locking schemes and attacks can be added on top of the
+same small circuit model.
 
 ## Setup
 
@@ -84,6 +84,22 @@ locklab validate benchmarks/sources/iscas85/c17.v \
 
 The command exits with status 0 when the key passes and status 1 when a
 mismatch is found.
+
+## Run a SAT attack
+
+Activate OSS CAD Suite so `yices-sat` is available, then provide the locked
+circuit and its unlocked oracle:
+
+```bash
+locklab attack sat \
+  outputs/c17_locked.v \
+  benchmarks/sources/iscas85/c17.v
+```
+
+LockLab automatically identifies the extra key inputs. It repeatedly finds a
+distinguishing input, evaluates that input on the oracle, and eliminates keys
+that disagree with the oracle. The recovered key is validated before it is
+printed. Solver CNF files are temporary and no attack-result files are created.
 
 ## Tests
 

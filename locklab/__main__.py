@@ -10,6 +10,7 @@ from locklab.circuit import CircuitError
 from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
 from locklab.locking import LockResult, lock_rll
+from locklab.sat_attack import sat_attack
 from locklab.validation import ValidationResult, validate_key
 
 
@@ -50,6 +51,18 @@ def build_parser() -> argparse.ArgumentParser:
     lock_parser.add_argument("--key-size", type=int, required=True)
     lock_parser.add_argument("--seed", type=int, default=0)
 
+    attack_parser = subparsers.add_parser("attack", help="Attack a locked circuit")
+    attack_subparsers = attack_parser.add_subparsers(
+        dest="attack_kind",
+        required=True,
+    )
+    sat_parser = attack_subparsers.add_parser(
+        "sat",
+        help="Run an oracle-guided SAT attack",
+    )
+    sat_parser.add_argument("locked", type=Path)
+    sat_parser.add_argument("oracle", type=Path)
+
     validate_parser = subparsers.add_parser(
         "validate",
         help="Check a key against an unlocked reference circuit",
@@ -77,6 +90,9 @@ def main() -> None:
             return
         if args.command == "lock":
             _run_lock(args)
+            return
+        if args.command == "attack" and args.attack_kind == "sat":
+            _run_sat_attack(args.locked, args.oracle)
             return
         if args.command == "validate":
             passed = _run_validate(args)
@@ -137,6 +153,19 @@ def _default_lock_output(source: Path) -> Path:
     source = source.expanduser()
     filename = f"{source.stem}_locked{source.suffix.lower()}"
     return (Path.cwd() / "outputs" / filename).resolve()
+
+
+def _run_sat_attack(locked_path: Path, oracle_path: Path) -> None:
+    locked = load_circuit(locked_path)
+    oracle = load_circuit(oracle_path)
+    result = sat_attack(locked, oracle)
+    print(f"Recovered key: {result.key_string}")
+    print(f"Distinguishing inputs: {len(result.observations)}")
+    print(f"SAT solver calls: {result.solver_calls}")
+    print(
+        f"Validation: PASS ({result.validation.method}, "
+        f"{result.validation.vectors_checked} vectors)"
+    )
 
 
 def _run_validate(args: argparse.Namespace) -> bool:

@@ -20,6 +20,7 @@ TOOLS = (
     Tool("Yosys", "yosys", ("-V",), required=True),
     Tool("Icarus Verilog compiler", "iverilog", ("-V",)),
     Tool("Icarus Verilog runtime", "vvp", ("-V",)),
+    Tool("Yices SAT solver", "yices-sat"),
     Tool("EQY", "eqy"),
     Tool("SBY", "sby"),
 )
