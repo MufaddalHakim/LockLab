@@ -42,6 +42,7 @@ locklab info benchmarks/sources/iscas85/c17.v
 locklab info benchmarks/sources/iscas85/c17.bench
 locklab info benchmarks/sources/iscas85/c432.bench
 locklab info benchmarks/sources/iscas85/c880.bench
+locklab info benchmarks/sources/iscas85/c1908.bench
 ```
 
 Use `--top MODULE` when a Verilog file contains multiple possible top modules.
@@ -123,7 +124,10 @@ locklab attack sat \
 LockLab automatically identifies the extra key inputs. It repeatedly finds a
 distinguishing input, evaluates that input on the oracle, and eliminates keys
 that disagree with the oracle. A final formal SAT miter validates the recovered
-key before it is printed. Solver CNF files are temporary and no attack-result
+key before it is printed. When adjacent lock metadata is available, the command
+also classifies the recovery as the exact planted key or a functionally
+equivalent alternative. Alternative results include the changed key-bit indices
+and their protected signals. Solver CNF files are temporary and no attack-result
 files are created.
 
 ## Tests

@@ -9,6 +9,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
 C432_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c432.bench"
 C880_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c880.bench"
+C1908_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c1908.bench"
 
 
 def test_load_c17_bench() -> None:
@@ -34,6 +35,14 @@ def test_load_c880_bench() -> None:
     assert len(circuit.inputs) == 60
     assert len(circuit.outputs) == 26
     assert len(circuit.gates) == 383
+
+
+def test_load_c1908_bench() -> None:
+    circuit = load_bench(C1908_BENCH)
+
+    assert len(circuit.inputs) == 33
+    assert len(circuit.outputs) == 25
+    assert len(circuit.gates) == 880
 
 
 def test_bench_round_trip_preserves_behavior(tmp_path: Path) -> None:

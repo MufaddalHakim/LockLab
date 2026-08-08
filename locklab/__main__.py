@@ -161,6 +161,8 @@ def _run_sat_attack(locked_path: Path, oracle_path: Path) -> None:
     oracle = load_circuit(oracle_path)
     result = sat_attack(locked, oracle)
     print(f"Recovered key: {result.key_string}")
+    for line in _attack_key_classification(locked_path, result.key):
+        print(line)
     print(f"Distinguishing inputs: {len(result.observations)}")
     print(f"SAT solver calls: {result.solver_calls}")
     print("Validation: PASS (formal SAT miter UNSAT)")
@@ -213,6 +215,13 @@ def _parse_key(text: str) -> tuple[int, ...]:
 
 
 def _read_planted_key(candidate: Path) -> tuple[int, ...] | None:
+    metadata = _read_lock_metadata(candidate)
+    if metadata is None:
+        return None
+    return _parse_key(metadata["key"])
+
+
+def _read_lock_metadata(candidate: Path) -> dict[str, object] | None:
     metadata_path = candidate.with_suffix(".lock.json")
     if not metadata_path.is_file():
         return None
@@ -222,7 +231,63 @@ def _read_planted_key(candidate: Path) -> tuple[int, ...] | None:
         raise CircuitError(f"cannot read lock metadata {metadata_path}: {error}") from error
     if not isinstance(metadata, dict) or not isinstance(metadata.get("key"), str):
         raise CircuitError(f"lock metadata has no valid key: {metadata_path}")
-    return _parse_key(metadata["key"])
+    return metadata
+
+
+def _attack_key_classification(
+    locked_path: Path,
+    recovered_key: tuple[int, ...],
+) -> tuple[str, ...]:
+    metadata = _read_lock_metadata(locked_path)
+    if metadata is None:
+        return ("Classification: unavailable (no lock metadata)",)
+
+    planted_key = _parse_key(metadata["key"])
+    if len(planted_key) != len(recovered_key):
+        raise CircuitError("lock metadata key length does not match recovered key")
+    if planted_key == recovered_key:
+        return ("Classification: exact planted key",)
+
+    changed_indices = tuple(
+        index
+        for index, (planted_bit, recovered_bit) in enumerate(
+            zip(planted_key, recovered_key)
+        )
+        if planted_bit != recovered_bit
+    )
+    lines = [
+        "Classification: functionally equivalent alternative key",
+        f"Hamming distance: {len(changed_indices)}",
+        "Changed key bits (zero-based): "
+        + ", ".join(map(str, changed_indices)),
+    ]
+
+    insertion_records = metadata.get("insertions")
+    if not isinstance(insertion_records, list):
+        return tuple(lines)
+    insertions = {
+        record.get("key_index"): record
+        for record in insertion_records
+        if isinstance(record, dict) and isinstance(record.get("key_index"), int)
+    }
+    details: list[str] = []
+    for index in changed_indices:
+        insertion = insertions.get(index)
+        if insertion is None:
+            continue
+        key_input = insertion.get("key_input")
+        protected_signal = insertion.get("protected_signal")
+        if not isinstance(key_input, str) or not isinstance(protected_signal, str):
+            continue
+        detail = f"  bit {index}: {key_input} protects {protected_signal}"
+        decoy_signal = insertion.get("decoy_signal")
+        if isinstance(decoy_signal, str):
+            detail += f", decoy {decoy_signal}"
+        details.append(detail)
+    if details:
+        lines.append("Changed insertions:")
+        lines.extend(details)
+    return tuple(lines)
 
 
 def _write_lock_metadata(

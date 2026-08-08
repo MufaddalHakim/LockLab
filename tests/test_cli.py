@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from locklab.__main__ import _attack_key_classification
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
@@ -83,4 +85,59 @@ def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
         )
         assert attacked.returncode == 0, attacked.stderr
         assert "Recovered key:" in attacked.stdout
+        assert "Classification:" in attacked.stdout
         assert "Validation: PASS (formal SAT miter UNSAT)" in attacked.stdout
+
+
+def test_attack_classification_reports_exact_key(tmp_path: Path) -> None:
+    locked_path = tmp_path / "locked.bench"
+    locked_path.with_suffix(".lock.json").write_text(
+        json.dumps({"key": "101"}),
+        encoding="utf-8",
+    )
+
+    result = _attack_key_classification(locked_path, (1, 0, 1))
+
+    assert result == ("Classification: exact planted key",)
+
+
+def test_attack_classification_reports_changed_insertions(tmp_path: Path) -> None:
+    locked_path = tmp_path / "locked.bench"
+    locked_path.with_suffix(".lock.json").write_text(
+        json.dumps(
+            {
+                "key": "101",
+                "insertions": [
+                    {
+                        "key_index": 0,
+                        "key_input": "keyinput_0",
+                        "protected_signal": "G10",
+                    },
+                    {
+                        "key_index": 2,
+                        "key_input": "keyinput_2",
+                        "protected_signal": "G30",
+                        "decoy_signal": "G5",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _attack_key_classification(locked_path, (0, 0, 0))
+
+    assert result == (
+        "Classification: functionally equivalent alternative key",
+        "Hamming distance: 2",
+        "Changed key bits (zero-based): 0, 2",
+        "Changed insertions:",
+        "  bit 0: keyinput_0 protects G10",
+        "  bit 2: keyinput_2 protects G30, decoy G5",
+    )
+
+
+def test_attack_classification_handles_missing_metadata(tmp_path: Path) -> None:
+    result = _attack_key_classification(tmp_path / "external.bench", (0,))
+
+    assert result == ("Classification: unavailable (no lock metadata)",)
