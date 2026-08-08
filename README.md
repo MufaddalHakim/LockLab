@@ -5,8 +5,8 @@ locking. It reads Verilog or BENCH circuits, shows circuit information, inserts
 logic-locking gates, and validates candidate keys.
 
 The current version implements Random Logic Locking (RLL), MUX-based locking,
-and an oracle-guided SAT attack. Both locking schemes use the same circuit
-model, formal validator, and attack command.
+a type-0 Anti-SAT defense, and an oracle-guided SAT attack. All locking schemes
+use the same circuit model, formal validator, and attack command.
 
 ## Setup
 
@@ -85,6 +85,25 @@ decoy is chosen only from primary inputs or earlier gates, preventing the
 insertion from creating a combinational cycle. The metadata records the decoy
 used for each key bit.
 
+Anti-SAT locking inserts a point-function block whose output is XORed into a
+seeded primary output:
+
+```bash
+locklab lock benchmarks/sources/iscas85/c17.bench \
+  --scheme antisat \
+  --key-size 4 \
+  --seed 42
+```
+
+The total Anti-SAT key size must be even and at least 4. Its two key halves are
+applied to complementary AND and NAND functions. Matching halves make the
+Anti-SAT block output constant zero, preserving the original circuit; unequal
+halves corrupt at least one input pattern. Standalone Anti-SAT has deliberately
+low output corruption and recognizable structure, so it is a research defense
+for studying SAT behavior rather than a complete production protection scheme.
+The implementation follows the type-0 construction described in the original
+[Anti-SAT paper](https://eprint.iacr.org/2017/761).
+
 BENCH input and output use the same command:
 
 ```bash
@@ -129,6 +148,30 @@ also classifies the recovery as the exact planted key or a functionally
 equivalent alternative. Alternative results include the changed key-bit indices
 and their protected signals. Solver CNF files are temporary and no attack-result
 files are created.
+
+## Run an approximate SAT attack
+
+AppSAT can stop before exact SAT convergence when sampled functional error stays
+below a requested threshold:
+
+```bash
+locklab attack appsat \
+  outputs/c17_locked.bench \
+  benchmarks/sources/iscas85/c17.bench \
+  --samples 32 \
+  --threshold 0.01 \
+  --seed 7
+```
+
+The command reports distinguishing inputs, random oracle queries, reinforced
+observations, estimated input error, and a final formal-equivalence check. A
+formal-equivalence failure is an expected possible outcome: AppSAT intentionally
+accepts an approximate key when its sampled error meets the threshold. LockLab
+checks error after every five distinguishing inputs and stops after two
+consecutive estimates at or below the threshold. Sampling is deterministic for
+a fixed seed, and no attack-result files are created.
+The stopping and query-reinforcement design follows the original
+[AppSAT paper](https://www.cerc.utexas.edu/utda/publications/C209.pdf).
 
 ## Tests
 

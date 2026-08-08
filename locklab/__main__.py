@@ -9,8 +9,8 @@ from pathlib import Path
 from locklab.circuit import CircuitError
 from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
-from locklab.locking import LockResult, lock_mux, lock_rll
-from locklab.sat_attack import sat_attack
+from locklab.locking import LockResult, lock_antisat, lock_mux, lock_rll
+from locklab.sat_attack import appsat_attack, sat_attack
 from locklab.validation import ValidationResult, prove_key_equivalence, validate_key
 
 
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     lock_parser.add_argument("--top", help="Top module for Verilog input")
     lock_parser.add_argument(
         "--scheme",
-        choices=("rll", "mux"),
+        choices=("rll", "mux", "antisat"),
         default="rll",
         help="Logic-locking scheme (default: rll)",
     )
@@ -62,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sat_parser.add_argument("locked", type=Path)
     sat_parser.add_argument("oracle", type=Path)
+    appsat_parser = attack_subparsers.add_parser(
+        "appsat",
+        help="Run an approximate oracle-guided SAT attack",
+    )
+    appsat_parser.add_argument("locked", type=Path)
+    appsat_parser.add_argument("oracle", type=Path)
+    appsat_parser.add_argument("--samples", type=int, default=256)
+    appsat_parser.add_argument("--threshold", type=float, default=0.01)
+    appsat_parser.add_argument("--seed", type=int, default=0)
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -92,6 +101,9 @@ def main() -> None:
         if args.command == "attack" and args.attack_kind == "sat":
             _run_sat_attack(args.locked, args.oracle)
             return
+        if args.command == "attack" and args.attack_kind == "appsat":
+            _run_appsat_attack(args)
+            return
         if args.command == "validate":
             passed = _run_validate(args)
             raise SystemExit(0 if passed else 1)
@@ -121,6 +133,8 @@ def _run_lock(args: argparse.Namespace) -> None:
         lock_result = lock_rll(source, key_size=args.key_size, seed=args.seed)
     elif args.scheme == "mux":
         lock_result = lock_mux(source, key_size=args.key_size, seed=args.seed)
+    elif args.scheme == "antisat":
+        lock_result = lock_antisat(source, key_size=args.key_size, seed=args.seed)
     else:
         raise CircuitError(f"unsupported locking scheme: {args.scheme}")
 
@@ -166,6 +180,44 @@ def _run_sat_attack(locked_path: Path, oracle_path: Path) -> None:
     print(f"Distinguishing inputs: {len(result.observations)}")
     print(f"SAT solver calls: {result.solver_calls}")
     print("Validation: PASS (formal SAT miter UNSAT)")
+
+
+def _run_appsat_attack(args: argparse.Namespace) -> None:
+    locked = load_circuit(args.locked)
+    oracle = load_circuit(args.oracle)
+    result = appsat_attack(
+        locked,
+        oracle,
+        samples=args.samples,
+        error_threshold=args.threshold,
+        seed=args.seed,
+    )
+    print(f"Recovered key: {result.key_string}")
+    if result.validation.passed:
+        for line in _attack_key_classification(args.locked, result.key):
+            print(line)
+    else:
+        print("Classification: approximate key (not formally equivalent)")
+        planted_key = _read_planted_key(args.locked)
+        if planted_key is not None and len(planted_key) == len(result.key):
+            hamming_distance = sum(
+                planted_bit != recovered_bit
+                for planted_bit, recovered_bit in zip(planted_key, result.key)
+            )
+            print(f"Hamming distance from planted key: {hamming_distance}")
+    print(f"Termination: {result.termination}")
+    print(f"Distinguishing inputs: {result.distinguishing_inputs}")
+    print(f"Random oracle queries: {result.random_queries}")
+    print(f"Reinforced observations: {result.reinforced_observations}")
+    print(f"SAT solver calls: {result.solver_calls}")
+    print(
+        f"Estimated input error: {result.estimated_error:.4%} "
+        f"({result.sampled_mismatches}/{result.sampled_vectors} samples)"
+    )
+    if result.validation.passed:
+        print("Formal equivalence: PASS (SAT miter UNSAT)")
+    else:
+        print("Formal equivalence: FAIL (approximate result)")
 
 
 def _run_validate(args: argparse.Namespace) -> bool:

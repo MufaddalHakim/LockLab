@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from locklab.bench import load_bench, write_bench
-from locklab.locking import lock_mux, lock_rll
+from locklab.circuit import CircuitError
+from locklab.locking import lock_antisat, lock_mux, lock_rll
 from locklab.validation import validate_key
 
 
@@ -120,3 +123,45 @@ def test_mux_locked_bench_round_trip_validates(tmp_path: Path) -> None:
     )
 
     assert result.passed
+
+
+def test_antisat_is_deterministic_and_uses_matching_key_halves() -> None:
+    original = load_bench(C17_BENCH)
+
+    first = lock_antisat(original, key_size=4, seed=42)
+    second = lock_antisat(original, key_size=4, seed=42)
+
+    assert first == second
+    assert first.key[:2] == first.key[2:]
+    assert len(first.circuit.inputs) == len(original.inputs) + 4
+
+
+def test_antisat_correct_key_passes_and_unequal_halves_fail() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_antisat(original, key_size=4, seed=7)
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+
+    correct = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=locked.key,
+    )
+    wrong_key = (*locked.key[:2], 1 - locked.key[2], locked.key[3])
+    wrong = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=wrong_key,
+    )
+
+    assert correct.passed
+    assert not wrong.passed
+
+
+@pytest.mark.parametrize("key_size", (1, 2, 3, 5))
+def test_antisat_rejects_invalid_key_size(key_size: int) -> None:
+    original = load_bench(C17_BENCH)
+
+    with pytest.raises(CircuitError, match="even and at least 4"):
+        lock_antisat(original, key_size=key_size, seed=0)

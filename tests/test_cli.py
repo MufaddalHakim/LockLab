@@ -13,7 +13,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
 
 
-@pytest.mark.parametrize("scheme", ("rll", "mux"))
+@pytest.mark.parametrize("scheme", ("rll", "mux", "antisat"))
 def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
     locked_path = tmp_path / "outputs/c17_locked.bench"
     lock_command = (
@@ -25,7 +25,7 @@ def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
         "--scheme",
         scheme,
         "--key-size",
-        "2",
+        "4" if scheme == "antisat" else "2",
         "--seed",
         "42",
     )
@@ -141,3 +141,57 @@ def test_attack_classification_handles_missing_metadata(tmp_path: Path) -> None:
     result = _attack_key_classification(tmp_path / "external.bench", (0,))
 
     assert result == ("Classification: unavailable (no lock metadata)",)
+
+
+def test_cli_runs_appsat_on_antisat_locked_circuit(tmp_path: Path) -> None:
+    if shutil.which("yices-sat") is None:
+        pytest.skip("Yices SAT is required for AppSAT")
+
+    locked_path = tmp_path / "outputs/c17_locked.bench"
+    locked = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "lock",
+            str(C17_BENCH),
+            "--scheme",
+            "antisat",
+            "--key-size",
+            "10",
+            "--seed",
+            "42",
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert locked.returncode == 0, locked.stderr
+
+    attacked = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "attack",
+            "appsat",
+            str(locked_path),
+            str(C17_BENCH),
+            "--samples",
+            "32",
+            "--threshold",
+            "0",
+            "--seed",
+            "7",
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert attacked.returncode == 0, attacked.stderr
+    assert "Termination: approximate error threshold" in attacked.stdout
+    assert "Estimated input error: 0.0000%" in attacked.stdout
+    assert "Formal equivalence: PASS" in attacked.stdout
