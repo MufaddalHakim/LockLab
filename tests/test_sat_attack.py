@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from locklab.bench import load_bench
-from locklab.locking import lock_rll
+from locklab.locking import lock_mux, lock_rll
 from locklab.sat_attack import sat_attack
 
 
@@ -34,5 +34,17 @@ def test_sat_attack_recovers_functionality_for_locked_c17(
     assert result.validation.passed
     assert result.validation.vectors_checked == 32
     assert len(result.key) == key_size
+    assert result.observations
+    assert result.solver_calls == len(result.observations) + 2
+
+
+def test_sat_attack_recovers_functionality_for_mux_locked_c17() -> None:
+    oracle = load_bench(C17_BENCH)
+    locked = lock_mux(oracle, key_size=3, seed=0)
+
+    result = sat_attack(locked.circuit, oracle)
+
+    assert result.validation.passed
+    assert len(result.key) == 3
     assert result.observations
     assert result.solver_calls == len(result.observations) + 2

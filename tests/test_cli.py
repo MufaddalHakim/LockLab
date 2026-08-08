@@ -4,12 +4,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
 
 
-def test_cli_locks_and_validates_bench(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scheme", ("rll", "mux"))
+def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
     locked_path = tmp_path / "outputs/c17_locked.bench"
     lock_command = (
         sys.executable,
@@ -18,7 +21,7 @@ def test_cli_locks_and_validates_bench(tmp_path: Path) -> None:
         "lock",
         str(C17_BENCH),
         "--scheme",
-        "rll",
+        scheme,
         "--key-size",
         "2",
         "--seed",
@@ -37,6 +40,9 @@ def test_cli_locks_and_validates_bench(tmp_path: Path) -> None:
     assert "Validation: PASS" in locked.stdout
     metadata_path = locked_path.with_suffix(".lock.json")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["scheme"] == scheme
+    if scheme == "mux":
+        assert all("decoy_signal" in item for item in metadata["insertions"])
 
     if shutil.which("yices-sat") is not None:
         validated = subprocess.run(

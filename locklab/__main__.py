@@ -9,7 +9,7 @@ from pathlib import Path
 from locklab.circuit import CircuitError
 from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
-from locklab.locking import LockResult, lock_rll
+from locklab.locking import LockResult, lock_mux, lock_rll
 from locklab.sat_attack import sat_attack
 from locklab.validation import ValidationResult, prove_key_equivalence, validate_key
 
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     lock_parser.add_argument("--top", help="Top module for Verilog input")
     lock_parser.add_argument(
         "--scheme",
-        choices=("rll",),
+        choices=("rll", "mux"),
         default="rll",
         help="Logic-locking scheme (default: rll)",
     )
@@ -117,9 +117,12 @@ def _run_lock(args: argparse.Namespace) -> None:
     metadata = output.with_suffix(".lock.json")
 
     source = load_circuit(args.circuit, top=args.top)
-    if args.scheme != "rll":
+    if args.scheme == "rll":
+        lock_result = lock_rll(source, key_size=args.key_size, seed=args.seed)
+    elif args.scheme == "mux":
+        lock_result = lock_mux(source, key_size=args.key_size, seed=args.seed)
+    else:
         raise CircuitError(f"unsupported locking scheme: {args.scheme}")
-    lock_result = lock_rll(source, key_size=args.key_size, seed=args.seed)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     metadata.parent.mkdir(parents=True, exist_ok=True)
@@ -242,6 +245,11 @@ def _write_lock_metadata(
                 "correct_bit": insertion.correct_bit,
                 "gate": insertion.gate_kind,
                 "protected_signal": insertion.protected_signal,
+                **(
+                    {"decoy_signal": insertion.decoy_signal}
+                    if insertion.decoy_signal is not None
+                    else {}
+                ),
             }
             for insertion in lock_result.insertions
         ],

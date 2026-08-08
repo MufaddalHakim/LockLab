@@ -14,6 +14,7 @@ class LockInsertion:
     gate_kind: str
     protected_signal: str
     source_signal: str
+    decoy_signal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,107 @@ def lock_rll(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
 
     locked = Circuit(
         name=f"{circuit.name}_rll",
+        inputs=(*circuit.inputs, *key_inputs),
+        outputs=circuit.outputs,
+        gates=tuple(locked_gates),
+    )
+    locked.validate()
+    return LockResult(
+        circuit=locked,
+        key=key,
+        seed=seed,
+        insertions=tuple(insertions),
+    )
+
+
+def lock_mux(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
+    """Insert seeded MUX locks using topologically earlier decoy signals."""
+
+    circuit.validate()
+    if key_size <= 0:
+        raise CircuitError("key size must be greater than zero")
+
+    topological_gates = circuit.topological_gates()
+    observable = set(circuit.observable_gate_outputs())
+    earlier_signals = list(circuit.inputs)
+    decoys_by_signal: dict[str, tuple[str, ...]] = {}
+    for gate in topological_gates:
+        if gate.output in observable and earlier_signals:
+            decoys_by_signal[gate.output] = tuple(earlier_signals)
+        earlier_signals.append(gate.output)
+
+    candidates = list(decoys_by_signal)
+    if key_size > len(candidates):
+        raise CircuitError(
+            f"key size {key_size} exceeds {len(candidates)} cycle-safe "
+            "MUX insertion points"
+        )
+
+    random_source = random.Random(seed)
+    selected_signals = random_source.sample(candidates, key_size)
+    key = tuple(random_source.randint(0, 1) for _ in range(key_size))
+
+    used_signals = set(circuit.inputs) | set(circuit.outputs)
+    used_signals.update(gate.output for gate in circuit.gates)
+    used_gate_names = {gate.name for gate in circuit.gates}
+    key_inputs: list[str] = []
+    insertions: list[LockInsertion] = []
+
+    for key_index, (signal, correct_bit) in enumerate(zip(selected_signals, key)):
+        key_input = _unique_name(f"keyinput_{key_index}", used_signals)
+        source_signal = _unique_name(f"{signal}_locksrc_{key_index}", used_signals)
+        decoy_signal = random_source.choice(decoys_by_signal[signal])
+        key_inputs.append(key_input)
+        insertions.append(
+            LockInsertion(
+                key_index=key_index,
+                key_input=key_input,
+                correct_bit=correct_bit,
+                gate_kind="MUX",
+                protected_signal=signal,
+                source_signal=source_signal,
+                decoy_signal=decoy_signal,
+            )
+        )
+
+    insertion_by_signal = {
+        insertion.protected_signal: insertion for insertion in insertions
+    }
+    locked_gates: list[Gate] = []
+    for gate in circuit.gates:
+        insertion = insertion_by_signal.get(gate.output)
+        locked_gates.append(
+            Gate(
+                name=gate.name,
+                kind=gate.kind,
+                inputs=gate.inputs,
+                output=insertion.source_signal if insertion else gate.output,
+            )
+        )
+
+    for insertion in insertions:
+        gate_name = _unique_name(
+            f"lock_gate_{insertion.key_index}",
+            used_gate_names,
+        )
+        if insertion.decoy_signal is None:
+            raise CircuitError("MUX insertion is missing its decoy signal")
+        data_inputs = (
+            (insertion.source_signal, insertion.decoy_signal)
+            if insertion.correct_bit == 0
+            else (insertion.decoy_signal, insertion.source_signal)
+        )
+        locked_gates.append(
+            Gate(
+                name=gate_name,
+                kind="MUX",
+                inputs=(*data_inputs, insertion.key_input),
+                output=insertion.protected_signal,
+            )
+        )
+
+    locked = Circuit(
+        name=f"{circuit.name}_mux",
         inputs=(*circuit.inputs, *key_inputs),
         outputs=circuit.outputs,
         gates=tuple(locked_gates),

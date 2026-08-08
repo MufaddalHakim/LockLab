@@ -4,9 +4,9 @@ LockLab is a command-line tool for experimenting with combinational logic
 locking. It reads Verilog or BENCH circuits, shows circuit information, inserts
 logic-locking gates, and validates candidate keys.
 
-The current version implements Random Logic Locking (RLL) and an oracle-guided
-SAT attack. Additional locking schemes and attacks can be added on top of the
-same small circuit model.
+The current version implements Random Logic Locking (RLL), MUX-based locking,
+and an oracle-guided SAT attack. Both locking schemes use the same circuit
+model, formal validator, and attack command.
 
 ## Setup
 
@@ -41,9 +41,12 @@ does not require Yosys.
 locklab info benchmarks/sources/iscas85/c17.v
 locklab info benchmarks/sources/iscas85/c17.bench
 locklab info benchmarks/sources/iscas85/c432.bench
+locklab info benchmarks/sources/iscas85/c880.bench
 ```
 
 Use `--top MODULE` when a Verilog file contains multiple possible top modules.
+The included ISCAS-85 BENCH files come from the
+[University of Toronto ECE 1767 benchmark archive](https://www.eecg.utoronto.ca/~ece1767/project/iscas.html).
 
 ## Lock a circuit
 
@@ -66,6 +69,20 @@ locked circuit and metadata for the same input filename.
 The generated file is reloaded and validated with its correct key before the
 command reports success. Small circuits are checked exhaustively; circuits with
 more than 16 data inputs use deterministic random simulation.
+
+MUX locking uses the same command with a different scheme:
+
+```bash
+locklab lock benchmarks/sources/iscas85/c17.v \
+  --scheme mux \
+  --key-size 2 \
+  --seed 42
+```
+
+Each inserted MUX selects between the protected signal and a seeded decoy. A
+decoy is chosen only from primary inputs or earlier gates, preventing the
+insertion from creating a combinational cycle. The metadata records the decoy
+used for each key bit.
 
 BENCH input and output use the same command:
 
