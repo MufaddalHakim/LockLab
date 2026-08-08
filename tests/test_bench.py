@@ -7,6 +7,7 @@ from locklab.bench import BenchError, load_bench, parse_bench, write_bench
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
+C432_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c432.bench"
 
 
 def test_load_c17_bench() -> None:
@@ -16,6 +17,14 @@ def test_load_c17_bench() -> None:
     assert circuit.outputs == ("N22", "N23")
     assert len(circuit.gates) == 6
     assert {gate.kind for gate in circuit.gates} == {"NAND"}
+
+
+def test_load_c432_bench() -> None:
+    circuit = load_bench(C432_BENCH)
+
+    assert len(circuit.inputs) == 36
+    assert len(circuit.outputs) == 7
+    assert len(circuit.gates) == 232
 
 
 def test_bench_round_trip_preserves_behavior(tmp_path: Path) -> None:

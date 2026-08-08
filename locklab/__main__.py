@@ -11,7 +11,7 @@ from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
 from locklab.locking import LockResult, lock_rll
 from locklab.sat_attack import sat_attack
-from locklab.validation import ValidationResult, validate_key
+from locklab.validation import ValidationResult, prove_key_equivalence, validate_key
 
 
 def package_version() -> str:
@@ -72,8 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--key", required=True)
     validate_parser.add_argument("--reference-top")
     validate_parser.add_argument("--candidate-top")
-    validate_parser.add_argument("--random-vectors", type=int, default=1000)
-    validate_parser.add_argument("--seed", type=int, default=0)
 
     return parser
 
@@ -162,10 +160,7 @@ def _run_sat_attack(locked_path: Path, oracle_path: Path) -> None:
     print(f"Recovered key: {result.key_string}")
     print(f"Distinguishing inputs: {len(result.observations)}")
     print(f"SAT solver calls: {result.solver_calls}")
-    print(
-        f"Validation: PASS ({result.validation.method}, "
-        f"{result.validation.vectors_checked} vectors)"
-    )
+    print("Validation: PASS (formal SAT miter UNSAT)")
 
 
 def _run_validate(args: argparse.Namespace) -> bool:
@@ -173,25 +168,38 @@ def _run_validate(args: argparse.Namespace) -> bool:
     candidate = load_circuit(args.candidate, top=args.candidate_top)
     key = _parse_key(args.key)
     key_inputs = tuple(name for name in candidate.inputs if name not in reference.inputs)
-    result = validate_key(
+    result = prove_key_equivalence(
         reference,
         candidate,
         key_inputs=key_inputs,
         key=key,
-        random_vectors=args.random_vectors,
-        seed=args.seed,
     )
     if result.passed:
-        print(f"PASS: circuits matched for {result.vectors_checked} vectors")
-        print(f"Method: {result.method}")
+        planted_key = _read_planted_key(args.candidate)
+        if planted_key is not None and len(planted_key) != len(key):
+            raise CircuitError("lock metadata key length does not match candidate key")
+        if planted_key is None:
+            print("PASS: key is formally equivalent to the reference circuit")
+        elif key == planted_key:
+            print("PASS: exact planted key is formally equivalent")
+        else:
+            hamming_distance = sum(
+                candidate_bit != planted_bit
+                for candidate_bit, planted_bit in zip(key, planted_key)
+            )
+            print("PASS: alternative key is formally equivalent")
+            print(f"Difference from planted key: {hamming_distance} bit(s)")
+        print("Proof: SAT miter is UNSAT")
         return True
 
-    print(f"FAIL: found mismatches using {result.method} validation")
-    for mismatch in result.mismatches[:5]:
-        print(
-            f"  input={mismatch.inputs} reference={mismatch.reference_output} "
-            f"candidate={mismatch.candidate_output}"
-        )
+    mismatch = result.mismatches[0]
+    print("FAIL: key is not functionally equivalent")
+    print(
+        f"Counterexample: input={mismatch.inputs} "
+        f"reference={mismatch.reference_output} "
+        f"candidate={mismatch.candidate_output}"
+    )
+    print("Proof: SAT miter is SAT")
     return False
 
 
@@ -199,6 +207,19 @@ def _parse_key(text: str) -> tuple[int, ...]:
     if not text or any(character not in "01" for character in text):
         raise CircuitError("key must be a non-empty binary string")
     return tuple(int(character) for character in text)
+
+
+def _read_planted_key(candidate: Path) -> tuple[int, ...] | None:
+    metadata_path = candidate.with_suffix(".lock.json")
+    if not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise CircuitError(f"cannot read lock metadata {metadata_path}: {error}") from error
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("key"), str):
+        raise CircuitError(f"lock metadata has no valid key: {metadata_path}")
+    return _parse_key(metadata["key"])
 
 
 def _write_lock_metadata(

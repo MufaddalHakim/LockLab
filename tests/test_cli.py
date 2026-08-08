@@ -38,27 +38,28 @@ def test_cli_locks_and_validates_bench(tmp_path: Path) -> None:
     metadata_path = locked_path.with_suffix(".lock.json")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 
-    validated = subprocess.run(
-        (
-            sys.executable,
-            "-m",
-            "locklab",
-            "validate",
-            str(C17_BENCH),
-            str(locked_path),
-            "--key",
-            metadata["key"],
-        ),
-        cwd=REPOSITORY_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert validated.returncode == 0, validated.stderr
-    assert "PASS: circuits matched for 32 vectors" in validated.stdout
-
     if shutil.which("yices-sat") is not None:
+        validated = subprocess.run(
+            (
+                sys.executable,
+                "-m",
+                "locklab",
+                "validate",
+                str(C17_BENCH),
+                str(locked_path),
+                "--key",
+                metadata["key"],
+            ),
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert validated.returncode == 0, validated.stderr
+        assert "PASS: exact planted key is formally equivalent" in validated.stdout
+        assert "Proof: SAT miter is UNSAT" in validated.stdout
+
         attacked = subprocess.run(
             (
                 sys.executable,
@@ -76,4 +77,4 @@ def test_cli_locks_and_validates_bench(tmp_path: Path) -> None:
         )
         assert attacked.returncode == 0, attacked.stderr
         assert "Recovered key:" in attacked.stdout
-        assert "Validation: PASS" in attacked.stdout
+        assert "Validation: PASS (formal SAT miter UNSAT)" in attacked.stdout

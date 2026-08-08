@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from locklab.circuit import Circuit, CircuitError, Gate
 from locklab.cnf import CNF, encode_circuit, encode_gate
 from locklab.sat_solver import solve_cnf
-from locklab.validation import ValidationResult, validate_key
+from locklab.validation import ValidationResult, prove_key_equivalence
 
 
 @dataclass(frozen=True)
@@ -99,7 +99,7 @@ def sat_attack(
         int(key_result.model.get(key_variables[name], False))
         for name in key_inputs
     )
-    validation = validate_key(
+    validation = prove_key_equivalence(
         oracle,
         locked,
         key_inputs=key_inputs,

@@ -30,8 +30,9 @@ Check the available tools:
 locklab doctor
 ```
 
-Yosys is required for Verilog input. Icarus, EQY, and SBY are reported by the
-doctor but are optional for the currently implemented commands. BENCH input
+Yosys is required for Verilog input. Yices is required for formal key
+validation and the SAT attack. Icarus, EQY, and SBY are reported by the doctor
+but are optional for the currently implemented commands. BENCH input itself
 does not require Yosys.
 
 ## Inspect a circuit
@@ -39,6 +40,7 @@ does not require Yosys.
 ```bash
 locklab info benchmarks/sources/iscas85/c17.v
 locklab info benchmarks/sources/iscas85/c17.bench
+locklab info benchmarks/sources/iscas85/c432.bench
 ```
 
 Use `--top MODULE` when a Verilog file contains multiple possible top modules.
@@ -82,8 +84,13 @@ locklab validate benchmarks/sources/iscas85/c17.v \
   --key 01
 ```
 
-The command exits with status 0 when the key passes and status 1 when a
-mismatch is found.
+Activate OSS CAD Suite so `yices-sat` is available before validating. LockLab
+builds a formal miter between the reference and keyed circuit. It exits with
+status 0 when the miter is UNSAT, proving that no input can distinguish the two
+circuits. It reports whether the key exactly matches the planted key in the
+adjacent `.lock.json` metadata or is a different but functionally equivalent
+key. An incorrect key exits with status 1 and prints a concrete input where the
+outputs differ.
 
 ## Run a SAT attack
 
@@ -98,8 +105,9 @@ locklab attack sat \
 
 LockLab automatically identifies the extra key inputs. It repeatedly finds a
 distinguishing input, evaluates that input on the oracle, and eliminates keys
-that disagree with the oracle. The recovered key is validated before it is
-printed. Solver CNF files are temporary and no attack-result files are created.
+that disagree with the oracle. A final formal SAT miter validates the recovered
+key before it is printed. Solver CNF files are temporary and no attack-result
+files are created.
 
 ## Tests
 
