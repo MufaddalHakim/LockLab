@@ -6,6 +6,7 @@ from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from locklab.analysis import find_antisat_candidates
 from locklab.circuit import CircuitError
 from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
@@ -77,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     appsat_parser.add_argument("--samples", type=int, default=256)
     appsat_parser.add_argument("--threshold", type=float, default=0.01)
     appsat_parser.add_argument("--seed", type=int, default=0)
+    structural_parser = attack_subparsers.add_parser(
+        "antisat-structural",
+        help="Locate a type-0 Anti-SAT block by its gate topology",
+    )
+    structural_parser.add_argument("locked", type=Path)
+    structural_parser.add_argument("--top", help="Top module for Verilog input")
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -109,6 +116,9 @@ def main() -> None:
             return
         if args.command == "attack" and args.attack_kind == "appsat":
             _run_appsat_attack(args)
+            return
+        if args.command == "attack" and args.attack_kind == "antisat-structural":
+            _run_antisat_structural_attack(args.locked, top=args.top)
             return
         if args.command == "validate":
             passed = _run_validate(args)
@@ -241,6 +251,27 @@ def _run_appsat_attack(args: argparse.Namespace) -> None:
         print("Formal equivalence: PASS (SAT miter UNSAT)")
     else:
         print("Formal equivalence: FAIL (approximate result)")
+
+
+def _run_antisat_structural_attack(path: Path, *, top: str | None) -> None:
+    circuit = load_circuit(path, top=top)
+    candidates = find_antisat_candidates(circuit)
+    print(f"Anti-SAT structural candidates: {len(candidates)}")
+    if not candidates:
+        print("No matching type-0 Anti-SAT structure found")
+        return
+
+    for index, candidate in enumerate(candidates, start=1):
+        print(f"Candidate {index}:")
+        print(f"  Protected output: {candidate.protected_output}")
+        print(f"  Protected source: {candidate.protected_source}")
+        print(f"  Block signal: {candidate.block_signal}")
+        print(f"  Function branch: {candidate.function_signal}")
+        print(f"  Complement branch: {candidate.complement_signal}")
+        print(f"  Branch size: {candidate.branch_size}")
+        print(f"  Suspected key size: {candidate.key_size}")
+        print(f"  Data inputs: {', '.join(candidate.data_inputs)}")
+        print(f"  Suspected key inputs: {', '.join(candidate.key_inputs)}")
 
 
 def _run_validate(args: argparse.Namespace) -> bool:

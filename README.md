@@ -187,6 +187,26 @@ a fixed seed, and no attack-result files are created.
 The stopping and query-reinforcement design follows the original
 [AppSAT paper](https://www.cerc.utexas.edu/utda/publications/C209.pdf).
 
+## Run structural Anti-SAT analysis
+
+The structural command locates the recognizable type-0 Anti-SAT topology
+without an oracle or lock metadata:
+
+```bash
+locklab attack antisat-structural outputs/c1908_locked.bench
+```
+
+It reports the protected output, the two complementary branches, the branch
+width, the shared data inputs, and the suspected Anti-SAT key inputs. It handles
+both the multi-input gates written to BENCH and the equivalent two-input gate
+trees produced when Yosys reads Verilog. The command is read-only and writes no
+result files.
+
+This is an exact structural-signature experiment for LockLab's type-0
+construction, not a general signal-probability-skew or removal implementation.
+An obfuscated or synthesized implementation may not retain the same topology,
+so zero candidates does not prove that a circuit contains no Anti-SAT logic.
+
 ## Tests
 
 ```bash
