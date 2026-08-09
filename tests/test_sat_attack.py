@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from locklab.bench import load_bench
-from locklab.locking import lock_antisat, lock_mux, lock_rll
+from locklab.locking import lock_antisat, lock_mux, lock_rll, lock_rll_antisat
 from locklab.sat_attack import appsat_attack, sat_attack
 
 
@@ -118,3 +118,14 @@ def test_appsat_can_return_a_non_equivalent_approximate_key() -> None:
     assert result.sampled_mismatches == 1
     assert result.reinforced_observations == 1
     assert not result.validation.passed
+
+
+def test_sat_attack_recovers_functionality_for_rll_antisat_c17() -> None:
+    oracle = load_bench(C17_BENCH)
+    locked = lock_rll_antisat(oracle, key_size=8, seed=42)
+
+    result = sat_attack(locked.circuit, oracle)
+
+    assert result.validation.passed
+    assert len(result.key) == 8
+    assert result.observations

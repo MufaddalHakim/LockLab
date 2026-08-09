@@ -216,15 +216,62 @@ def lock_mux(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
 def lock_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
     """Insert a seeded type-0 Anti-SAT point-function block."""
 
+    return _add_antisat_block(
+        circuit,
+        key_size=key_size,
+        seed=seed,
+        data_inputs=circuit.inputs,
+        key_index_offset=0,
+    )
+
+
+def lock_rll_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
+    """Combine equal-sized RLL and Anti-SAT key components."""
+
+    circuit.validate()
+    if key_size < 8 or key_size % 4:
+        raise CircuitError(
+            "RLL+Anti-SAT key size must be divisible by 4 and at least 8"
+        )
+
+    component_size = key_size // 2
+    rll_result = lock_rll(circuit, key_size=component_size, seed=seed)
+    antisat_result = _add_antisat_block(
+        rll_result.circuit,
+        key_size=component_size,
+        seed=seed + 1,
+        data_inputs=circuit.inputs,
+        key_index_offset=component_size,
+    )
+    return LockResult(
+        circuit=antisat_result.circuit,
+        key=(*rll_result.key, *antisat_result.key),
+        seed=seed,
+        insertions=(*rll_result.insertions, *antisat_result.insertions),
+    )
+
+
+def _add_antisat_block(
+    circuit: Circuit,
+    *,
+    key_size: int,
+    seed: int,
+    data_inputs: tuple[str, ...],
+    key_index_offset: int,
+) -> LockResult:
     circuit.validate()
     if key_size < 4 or key_size % 2:
         raise CircuitError("Anti-SAT key size must be even and at least 4")
+    if len(data_inputs) != len(set(data_inputs)):
+        raise CircuitError("Anti-SAT data inputs must be unique")
+    if not set(data_inputs) <= set(circuit.inputs):
+        raise CircuitError("Anti-SAT data inputs do not exist in the circuit")
 
     branch_size = key_size // 2
-    if branch_size > len(circuit.inputs):
+    if branch_size > len(data_inputs):
         raise CircuitError(
             f"Anti-SAT key size {key_size} requires {branch_size} data inputs, "
-            f"but the circuit has {len(circuit.inputs)}"
+            f"but the circuit has {len(data_inputs)}"
         )
 
     driven_outputs = tuple(
@@ -236,7 +283,7 @@ def lock_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
         raise CircuitError("Anti-SAT requires a gate-driven primary output")
 
     random_source = random.Random(seed)
-    selected_inputs = tuple(random_source.sample(circuit.inputs, branch_size))
+    selected_inputs = tuple(random_source.sample(data_inputs, branch_size))
     protected_output = random_source.choice(driven_outputs)
     branch_key = tuple(random_source.randint(0, 1) for _ in range(branch_size))
     key = (*branch_key, *branch_key)
@@ -245,7 +292,7 @@ def lock_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
     used_signals.update(gate.output for gate in circuit.gates)
     used_gate_names = {gate.name for gate in circuit.gates}
     key_inputs = [
-        _unique_name(f"keyinput_{index}", used_signals)
+        _unique_name(f"keyinput_{key_index_offset + index}", used_signals)
         for index in range(key_size)
     ]
     protected_source = _unique_name(
@@ -267,7 +314,8 @@ def lock_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
     insertions: list[LockInsertion] = []
     for branch in range(2):
         for position, data_input in enumerate(selected_inputs):
-            key_index = branch * branch_size + position
+            local_key_index = branch * branch_size + position
+            key_index = key_index_offset + local_key_index
             signal = _unique_name(
                 f"antisat_branch_{branch}_{position}",
                 used_signals,
@@ -280,7 +328,7 @@ def lock_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
                 Gate(
                     name=gate_name,
                     kind="XOR",
-                    inputs=(data_input, key_inputs[key_index]),
+                    inputs=(data_input, key_inputs[local_key_index]),
                     output=signal,
                 )
             )
@@ -288,8 +336,8 @@ def lock_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
             insertions.append(
                 LockInsertion(
                     key_index=key_index,
-                    key_input=key_inputs[key_index],
-                    correct_bit=key[key_index],
+                    key_input=key_inputs[local_key_index],
+                    correct_bit=key[local_key_index],
                     gate_kind="XOR",
                     protected_signal=protected_output,
                     source_signal=data_input,

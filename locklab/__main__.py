@@ -9,7 +9,13 @@ from pathlib import Path
 from locklab.circuit import CircuitError
 from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
-from locklab.locking import LockResult, lock_antisat, lock_mux, lock_rll
+from locklab.locking import (
+    LockResult,
+    lock_antisat,
+    lock_mux,
+    lock_rll,
+    lock_rll_antisat,
+)
 from locklab.sat_attack import appsat_attack, sat_attack
 from locklab.validation import ValidationResult, prove_key_equivalence, validate_key
 
@@ -44,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     lock_parser.add_argument("--top", help="Top module for Verilog input")
     lock_parser.add_argument(
         "--scheme",
-        choices=("rll", "mux", "antisat"),
+        choices=("rll", "mux", "antisat", "rll-antisat"),
         default="rll",
         help="Logic-locking scheme (default: rll)",
     )
@@ -135,6 +141,12 @@ def _run_lock(args: argparse.Namespace) -> None:
         lock_result = lock_mux(source, key_size=args.key_size, seed=args.seed)
     elif args.scheme == "antisat":
         lock_result = lock_antisat(source, key_size=args.key_size, seed=args.seed)
+    elif args.scheme == "rll-antisat":
+        lock_result = lock_rll_antisat(
+            source,
+            key_size=args.key_size,
+            seed=args.seed,
+        )
     else:
         raise CircuitError(f"unsupported locking scheme: {args.scheme}")
 
@@ -198,13 +210,24 @@ def _run_appsat_attack(args: argparse.Namespace) -> None:
             print(line)
     else:
         print("Classification: approximate key (not formally equivalent)")
-        planted_key = _read_planted_key(args.locked)
+        metadata = _read_lock_metadata(args.locked)
+        if metadata is not None:
+            planted_key = _parse_key(metadata["key"])
+        else:
+            planted_key = None
         if planted_key is not None and len(planted_key) == len(result.key):
             hamming_distance = sum(
                 planted_bit != recovered_bit
                 for planted_bit, recovered_bit in zip(planted_key, result.key)
             )
             print(f"Hamming distance from planted key: {hamming_distance}")
+            component_line = _component_hamming_line(
+                metadata,
+                planted_key,
+                result.key,
+            )
+            if component_line is not None:
+                print(component_line)
     print(f"Termination: {result.termination}")
     print(f"Distinguishing inputs: {result.distinguishing_inputs}")
     print(f"Random oracle queries: {result.random_queries}")
@@ -310,9 +333,18 @@ def _attack_key_classification(
     lines = [
         "Classification: functionally equivalent alternative key",
         f"Hamming distance: {len(changed_indices)}",
-        "Changed key bits (zero-based): "
-        + ", ".join(map(str, changed_indices)),
     ]
+    component_line = _component_hamming_line(
+        metadata,
+        planted_key,
+        recovered_key,
+    )
+    if component_line is not None:
+        lines.append(component_line)
+    lines.append(
+        "Changed key bits (zero-based): "
+        + ", ".join(map(str, changed_indices))
+    )
 
     insertion_records = metadata.get("insertions")
     if not isinstance(insertion_records, list):
@@ -340,6 +372,42 @@ def _attack_key_classification(
         lines.append("Changed insertions:")
         lines.extend(details)
     return tuple(lines)
+
+
+def _component_hamming_line(
+    metadata: dict[str, object],
+    planted_key: tuple[int, ...],
+    recovered_key: tuple[int, ...],
+) -> str | None:
+    components = metadata.get("components")
+    if not isinstance(components, dict):
+        return None
+    rll_size = components.get("rll_key_size")
+    antisat_size = components.get("antisat_key_size")
+    if (
+        not isinstance(rll_size, int)
+        or not isinstance(antisat_size, int)
+        or rll_size + antisat_size != len(planted_key)
+    ):
+        return None
+    rll_distance = sum(
+        planted_bit != recovered_bit
+        for planted_bit, recovered_bit in zip(
+            planted_key[:rll_size],
+            recovered_key[:rll_size],
+        )
+    )
+    antisat_distance = sum(
+        planted_bit != recovered_bit
+        for planted_bit, recovered_bit in zip(
+            planted_key[rll_size:],
+            recovered_key[rll_size:],
+        )
+    )
+    return (
+        "Component Hamming distance: "
+        f"RLL {rll_distance}, Anti-SAT {antisat_distance}"
+    )
 
 
 def _write_lock_metadata(
@@ -376,6 +444,16 @@ def _write_lock_metadata(
             "vectors_checked": validation.vectors_checked,
         },
     }
+    if scheme == "rll-antisat":
+        component_size = len(lock_result.key) // 2
+        payload["components"] = {
+            "rll_key_size": component_size,
+            "antisat_key_size": component_size,
+        }
+        for insertion in payload["insertions"]:
+            insertion["component"] = (
+                "rll" if insertion["key_index"] < component_size else "antisat"
+            )
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

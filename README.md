@@ -104,6 +104,20 @@ for studying SAT behavior rather than a complete production protection scheme.
 The implementation follows the type-0 construction described in the original
 [Anti-SAT paper](https://eprint.iacr.org/2017/761).
 
+The compound scheme combines RLL's higher wrong-key corruption with Anti-SAT's
+point-function behavior:
+
+```bash
+locklab lock benchmarks/sources/iscas85/c1908.bench \
+  --scheme rll-antisat \
+  --key-size 32 \
+  --seed 42
+```
+
+`--key-size` is the total key size and must be divisible by 4 and at least 8.
+LockLab assigns half of the bits to RLL and half to Anti-SAT. The metadata marks
+each insertion's component and records both component sizes.
+
 BENCH input and output use the same command:
 
 ```bash

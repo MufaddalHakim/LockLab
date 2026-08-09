@@ -4,7 +4,7 @@ import pytest
 
 from locklab.bench import load_bench, write_bench
 from locklab.circuit import CircuitError
-from locklab.locking import lock_antisat, lock_mux, lock_rll
+from locklab.locking import lock_antisat, lock_mux, lock_rll, lock_rll_antisat
 from locklab.validation import validate_key
 
 
@@ -165,3 +165,58 @@ def test_antisat_rejects_invalid_key_size(key_size: int) -> None:
 
     with pytest.raises(CircuitError, match="even and at least 4"):
         lock_antisat(original, key_size=key_size, seed=0)
+
+
+def test_rll_antisat_is_deterministic_and_splits_the_key_evenly() -> None:
+    original = load_bench(C17_BENCH)
+
+    first = lock_rll_antisat(original, key_size=8, seed=42)
+    second = lock_rll_antisat(original, key_size=8, seed=42)
+
+    assert first == second
+    assert len(first.key) == 8
+    assert first.key[4:6] == first.key[6:8]
+    assert tuple(item.key_index for item in first.insertions) == tuple(range(8))
+
+
+def test_rll_antisat_correct_key_passes_and_both_components_enforce_keys() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_rll_antisat(original, key_size=8, seed=7)
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+
+    correct = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=locked.key,
+    )
+    wrong_rll_key = (1 - locked.key[0], *locked.key[1:])
+    wrong_rll = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=wrong_rll_key,
+    )
+    wrong_antisat_key = (
+        *locked.key[:6],
+        1 - locked.key[6],
+        locked.key[7],
+    )
+    wrong_antisat = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=wrong_antisat_key,
+    )
+
+    assert correct.passed
+    assert not wrong_rll.passed
+    assert not wrong_antisat.passed
+
+
+@pytest.mark.parametrize("key_size", (4, 6, 10))
+def test_rll_antisat_rejects_invalid_total_key_size(key_size: int) -> None:
+    original = load_bench(C17_BENCH)
+
+    with pytest.raises(CircuitError, match="divisible by 4 and at least 8"):
+        lock_rll_antisat(original, key_size=key_size, seed=0)
