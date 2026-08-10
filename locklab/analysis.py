@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from locklab.circuit import Circuit, Gate
+from locklab.circuit import Circuit, CircuitError, Gate
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,16 @@ class AntiSatCandidate:
     @property
     def key_size(self) -> int:
         return len(self.key_inputs)
+
+
+@dataclass(frozen=True)
+class AntiSatRemoval:
+    """Circuit and summary produced by bypassing structural Anti-SAT matches."""
+
+    circuit: Circuit
+    candidates: tuple[AntiSatCandidate, ...]
+    removed_gate_count: int
+    removed_inputs: tuple[str, ...]
 
 
 def find_antisat_candidates(circuit: Circuit) -> tuple[AntiSatCandidate, ...]:
@@ -77,6 +87,90 @@ def find_antisat_candidates(circuit: Circuit) -> tuple[AntiSatCandidate, ...]:
             )
 
     return tuple(candidates)
+
+
+def remove_antisat(circuit: Circuit) -> AntiSatRemoval:
+    """Bypass exact Anti-SAT matches and prune their unreachable logic."""
+
+    circuit.validate()
+    candidates = find_antisat_candidates(circuit)
+    if not candidates:
+        raise CircuitError("no matching type-0 Anti-SAT structure found")
+
+    candidates_by_output = {
+        candidate.protected_output: candidate for candidate in candidates
+    }
+    if len(candidates_by_output) != len(candidates):
+        raise CircuitError("multiple Anti-SAT candidates drive the same output")
+
+    rewritten_gates: list[Gate] = []
+    replaced_outputs: set[str] = set()
+    for gate in circuit.topological_gates():
+        candidate = candidates_by_output.get(gate.output)
+        if (
+            candidate is not None
+            and gate.kind == "XOR"
+            and set(gate.inputs)
+            == {candidate.protected_source, candidate.block_signal}
+        ):
+            rewritten_gates.append(
+                Gate(
+                    name=gate.name,
+                    kind="BUF",
+                    inputs=(candidate.protected_source,),
+                    output=gate.output,
+                )
+            )
+            replaced_outputs.add(gate.output)
+        else:
+            rewritten_gates.append(gate)
+
+    if replaced_outputs != set(candidates_by_output):
+        raise CircuitError("could not bypass every Anti-SAT candidate")
+
+    retained_gates, needed_signals = _prune_to_outputs(
+        tuple(rewritten_gates),
+        circuit.outputs,
+    )
+    suspected_key_inputs = {
+        key_input for candidate in candidates for key_input in candidate.key_inputs
+    }
+    retained_inputs = tuple(
+        name
+        for name in circuit.inputs
+        if name not in suspected_key_inputs or name in needed_signals
+    )
+    removed_inputs = tuple(
+        name for name in circuit.inputs if name not in retained_inputs
+    )
+
+    recovered = Circuit(
+        name=f"{circuit.name}_antisat_removed",
+        inputs=retained_inputs,
+        outputs=circuit.outputs,
+        gates=retained_gates,
+    )
+    recovered.validate()
+    return AntiSatRemoval(
+        circuit=recovered,
+        candidates=candidates,
+        removed_gate_count=len(circuit.gates) - len(recovered.gates),
+        removed_inputs=removed_inputs,
+    )
+
+
+def _prune_to_outputs(
+    gates: tuple[Gate, ...],
+    outputs: tuple[str, ...],
+) -> tuple[tuple[Gate, ...], set[str]]:
+    needed_signals = set(outputs)
+    retained_reversed: list[Gate] = []
+    for gate in reversed(gates):
+        if gate.output not in needed_signals:
+            continue
+        retained_reversed.append(gate)
+        needed_signals.update(gate.inputs)
+    return tuple(reversed(retained_reversed)), needed_signals
 
 
 def _identify_branches(

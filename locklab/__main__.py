@@ -6,7 +6,7 @@ from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from locklab.analysis import find_antisat_candidates
+from locklab.analysis import find_antisat_candidates, remove_antisat
 from locklab.circuit import CircuitError
 from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     structural_parser.add_argument("locked", type=Path)
     structural_parser.add_argument("--top", help="Top module for Verilog input")
+    removal_parser = attack_subparsers.add_parser(
+        "antisat-remove",
+        help="Bypass a structurally recognized type-0 Anti-SAT block",
+    )
+    removal_parser.add_argument("locked", type=Path)
+    removal_parser.add_argument("--top", help="Top module for Verilog input")
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -119,6 +125,9 @@ def main() -> None:
             return
         if args.command == "attack" and args.attack_kind == "antisat-structural":
             _run_antisat_structural_attack(args.locked, top=args.top)
+            return
+        if args.command == "attack" and args.attack_kind == "antisat-remove":
+            _run_antisat_removal_attack(args.locked, top=args.top)
             return
         if args.command == "validate":
             passed = _run_validate(args)
@@ -272,6 +281,31 @@ def _run_antisat_structural_attack(path: Path, *, top: str | None) -> None:
         print(f"  Suspected key size: {candidate.key_size}")
         print(f"  Data inputs: {', '.join(candidate.data_inputs)}")
         print(f"  Suspected key inputs: {', '.join(candidate.key_inputs)}")
+
+
+def _run_antisat_removal_attack(path: Path, *, top: str | None) -> None:
+    circuit = load_circuit(path, top=top)
+    result = remove_antisat(circuit)
+    output = _default_antisat_removal_output(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_circuit(result.circuit, output)
+
+    written_circuit = load_circuit(output)
+    if find_antisat_candidates(written_circuit):
+        raise CircuitError("recovered circuit still contains an Anti-SAT candidate")
+
+    print(f"Recovered circuit: {output}")
+    print(f"Removed Anti-SAT blocks: {len(result.candidates)}")
+    print(f"Removed gates: {result.removed_gate_count}")
+    print(f"Removed suspected key inputs: {len(result.removed_inputs)}")
+    print(f"Remaining inputs: {len(result.circuit.inputs)}")
+
+
+def _default_antisat_removal_output(source: Path) -> Path:
+    source = source.expanduser()
+    base_name = source.stem.removesuffix("_locked")
+    filename = f"{base_name}_antisat_removed{source.suffix.lower()}"
+    return (Path.cwd() / "outputs" / filename).resolve()
 
 
 def _run_validate(args: argparse.Namespace) -> bool:

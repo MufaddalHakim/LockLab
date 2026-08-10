@@ -203,9 +203,27 @@ trees produced when Yosys reads Verilog. The command is read-only and writes no
 result files.
 
 This is an exact structural-signature experiment for LockLab's type-0
-construction, not a general signal-probability-skew or removal implementation.
-An obfuscated or synthesized implementation may not retain the same topology,
-so zero candidates does not prove that a circuit contains no Anti-SAT logic.
+construction, not a general signal-probability-skew implementation. An
+obfuscated or synthesized implementation may not retain the same topology, so
+zero candidates does not prove that a circuit contains no Anti-SAT logic.
+
+After locating the block, the removal command bypasses its output-injection XOR
+and prunes the now-unreachable Anti-SAT gates and key inputs:
+
+```bash
+locklab attack antisat-remove outputs/c1908_locked.bench
+```
+
+The recovered circuit is saved as `outputs/c1908_antisat_removed.bench`; no
+metadata or result log is created. For a compound RLL+Anti-SAT circuit, this
+removes only Anti-SAT and deliberately leaves the RLL gates and RLL key inputs.
+The reduced circuit can then be passed to the existing SAT attack:
+
+```bash
+locklab attack sat \
+  outputs/c1908_antisat_removed.bench \
+  benchmarks/sources/iscas85/c1908.bench
+```
 
 ## Tests
 
