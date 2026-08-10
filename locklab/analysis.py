@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import prod
 
 from locklab.circuit import Circuit, CircuitError, Gate
 
@@ -34,6 +35,18 @@ class AntiSatRemoval:
     candidates: tuple[AntiSatCandidate, ...]
     removed_gate_count: int
     removed_inputs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SignalProbabilityScore:
+    """Signal probability skew and gate-input ADS for one gate output."""
+
+    signal: str
+    gate_kind: str
+    probability_one: float
+    skew: float
+    input_skews: tuple[float, ...]
+    ads: float
 
 
 def find_antisat_candidates(circuit: Circuit) -> tuple[AntiSatCandidate, ...]:
@@ -87,6 +100,70 @@ def find_antisat_candidates(circuit: Circuit) -> tuple[AntiSatCandidate, ...]:
             )
 
     return tuple(candidates)
+
+
+def signal_probability_scores(
+    circuit: Circuit,
+) -> tuple[SignalProbabilityScore, ...]:
+    """Rank gates by ADS using independent-input probability propagation."""
+
+    circuit.validate()
+    probabilities = {"0": 0.0, "1": 1.0}
+    probabilities.update({name: 0.5 for name in circuit.inputs})
+    scores: list[SignalProbabilityScore] = []
+
+    for gate in circuit.topological_gates():
+        input_probabilities = tuple(
+            probabilities[signal] for signal in gate.inputs
+        )
+        probability_one = _gate_probability(gate.kind, input_probabilities)
+        input_skews = tuple(value - 0.5 for value in input_probabilities)
+        ads = (
+            max(input_skews) - min(input_skews)
+            if len(input_skews) >= 2
+            else 0.0
+        )
+        probabilities[gate.output] = probability_one
+        scores.append(
+            SignalProbabilityScore(
+                signal=gate.output,
+                gate_kind=gate.kind,
+                probability_one=probability_one,
+                skew=probability_one - 0.5,
+                input_skews=input_skews,
+                ads=ads,
+            )
+        )
+
+    return tuple(sorted(scores, key=lambda score: score.ads, reverse=True))
+
+
+def _gate_probability(kind: str, values: tuple[float, ...]) -> float:
+    if kind == "BUF":
+        probability = values[0]
+    elif kind == "NOT":
+        probability = 1.0 - values[0]
+    elif kind == "AND":
+        probability = prod(values)
+    elif kind == "NAND":
+        probability = 1.0 - prod(values)
+    elif kind == "OR":
+        probability = 1.0 - prod(1.0 - value for value in values)
+    elif kind == "NOR":
+        probability = prod(1.0 - value for value in values)
+    elif kind in {"XOR", "XNOR"}:
+        xor_probability = (
+            1.0 - prod(1.0 - 2.0 * value for value in values)
+        ) / 2.0
+        probability = (
+            xor_probability if kind == "XOR" else 1.0 - xor_probability
+        )
+    elif kind == "MUX":
+        data_a, data_b, select = values
+        probability = (1.0 - select) * data_a + select * data_b
+    else:
+        raise CircuitError(f"unsupported gate type: {kind}")
+    return min(1.0, max(0.0, probability))
 
 
 def remove_antisat(circuit: Circuit) -> AntiSatRemoval:

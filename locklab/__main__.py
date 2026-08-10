@@ -6,7 +6,11 @@ from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from locklab.analysis import find_antisat_candidates, remove_antisat
+from locklab.analysis import (
+    find_antisat_candidates,
+    remove_antisat,
+    signal_probability_scores,
+)
 from locklab.circuit import CircuitError
 from locklab.doctor import run_doctor
 from locklab.formats import load_circuit, write_circuit
@@ -90,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     removal_parser.add_argument("locked", type=Path)
     removal_parser.add_argument("--top", help="Top module for Verilog input")
+    sps_parser = attack_subparsers.add_parser(
+        "antisat-sps",
+        help="Rank Anti-SAT candidates using signal probability skew",
+    )
+    sps_parser.add_argument("locked", type=Path)
+    sps_parser.add_argument("--top", help="Top module for Verilog input")
 
     validate_parser = subparsers.add_parser(
         "validate",
@@ -128,6 +138,9 @@ def main() -> None:
             return
         if args.command == "attack" and args.attack_kind == "antisat-remove":
             _run_antisat_removal_attack(args.locked, top=args.top)
+            return
+        if args.command == "attack" and args.attack_kind == "antisat-sps":
+            _run_antisat_sps_attack(args.locked, top=args.top)
             return
         if args.command == "validate":
             passed = _run_validate(args)
@@ -306,6 +319,33 @@ def _default_antisat_removal_output(source: Path) -> Path:
     base_name = source.stem.removesuffix("_locked")
     filename = f"{base_name}_antisat_removed{source.suffix.lower()}"
     return (Path.cwd() / "outputs" / filename).resolve()
+
+
+def _run_antisat_sps_attack(path: Path, *, top: str | None) -> None:
+    circuit = load_circuit(path, top=top)
+    scores = signal_probability_scores(circuit)
+    if not scores:
+        print("SPS candidates: 0")
+        return
+
+    maximum_ads = scores[0].ads
+    candidate_count = sum(
+        abs(score.ads - maximum_ads) <= 1e-12 for score in scores
+    )
+    shown_scores = scores[:5]
+    print("Probability model: independent primary/key inputs with P(1)=0.5")
+    print(f"Highest ADS: {maximum_ads:.6f}")
+    print(f"Candidates at highest ADS: {candidate_count}")
+    print(f"SPS ranking: top {len(shown_scores)} of {len(scores)} gates")
+    for rank, score in enumerate(shown_scores, start=1):
+        input_skews = ", ".join(
+            f"{input_skew:+.6f}" for input_skew in score.input_skews
+        )
+        print(
+            f"  {rank}. {score.signal} [{score.gate_kind}] "
+            f"ADS={score.ads:.6f} P(1)={score.probability_one:.6f} "
+            f"skew={score.skew:+.6f} inputs=({input_skews})"
+        )
 
 
 def _run_validate(args: argparse.Namespace) -> bool:

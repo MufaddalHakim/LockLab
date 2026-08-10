@@ -5,8 +5,9 @@ locking. It reads Verilog or BENCH circuits, shows circuit information, inserts
 logic-locking gates, and validates candidate keys.
 
 The current version implements Random Logic Locking (RLL), MUX-based locking,
-a type-0 Anti-SAT defense, and an oracle-guided SAT attack. All locking schemes
-use the same circuit model, formal validator, and attack command.
+a type-0 Anti-SAT defense, exact and approximate oracle-guided SAT attacks, and
+structural and signal-probability Anti-SAT analysis. All commands use the same
+circuit model and parsers.
 
 ## Setup
 
@@ -206,6 +207,26 @@ This is an exact structural-signature experiment for LockLab's type-0
 construction, not a general signal-probability-skew implementation. An
 obfuscated or synthesized implementation may not retain the same topology, so
 zero candidates does not prove that a circuit contains no Anti-SAT logic.
+
+The signal-probability-skew (SPS) command provides a topology-independent
+ranking of suspicious gates:
+
+```bash
+locklab attack antisat-sps outputs/c1908_locked.bench
+```
+
+It assumes every primary and key input is independently one with probability
+0.5, then propagates one-probabilities through the combinational circuit. For a
+signal `x`, skew is `P(x=1) - 0.5`. A gate's absolute-difference-of-skews (ADS)
+score is the largest difference between its input skews. The command prints the
+five highest-scoring gates, including each output probability, output skew, and
+input skews. It needs no oracle or lock metadata and creates no files.
+
+This analytical propagation is deterministic and inexpensive, but it treats
+gate inputs as independent. Probabilities can therefore be approximate in
+reconvergent logic, where two gate inputs depend on the same earlier signal.
+The ranking follows the SPS/ADS method described in
+[Removal Attacks on Logic Locking and Camouflaging Techniques](https://eprint.iacr.org/2017/348).
 
 After locating the block, the removal command bypasses its output-injection XOR
 and prunes the now-unreachable Anti-SAT gates and key inputs:

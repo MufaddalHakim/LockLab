@@ -5,9 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from locklab.analysis import find_antisat_candidates, remove_antisat
+from locklab.analysis import (
+    find_antisat_candidates,
+    remove_antisat,
+    signal_probability_scores,
+)
 from locklab.bench import load_bench, write_bench
-from locklab.circuit import CircuitError
+from locklab.circuit import Circuit, CircuitError, Gate
 from locklab.formats import load_circuit
 from locklab.locking import lock_antisat, lock_rll_antisat
 from locklab.sat_attack import sat_attack
@@ -18,6 +22,95 @@ from locklab.verilog import write_verilog
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ROOT = REPOSITORY_ROOT / "benchmarks/sources/iscas85"
 C17_BENCH = BENCHMARK_ROOT / "c17.bench"
+
+
+def test_signal_probability_scores_cover_supported_gate_types() -> None:
+    circuit = Circuit(
+        name="probability_example",
+        inputs=("a", "b", "select"),
+        outputs=(
+            "mixed_out",
+            "or_out",
+            "nor_out",
+            "xor_out",
+            "xnor_out",
+            "mux_out",
+            "buf_out",
+            "not_out",
+        ),
+        gates=(
+            Gate("and_gate", "AND", ("a", "b"), "and_out"),
+            Gate("nand_gate", "NAND", ("a", "b"), "nand_out"),
+            Gate("or_gate", "OR", ("a", "b"), "or_out"),
+            Gate("nor_gate", "NOR", ("a", "b"), "nor_out"),
+            Gate("xor_gate", "XOR", ("a", "b"), "xor_out"),
+            Gate("xnor_gate", "XNOR", ("a", "b"), "xnor_out"),
+            Gate("mux_gate", "MUX", ("a", "b", "select"), "mux_out"),
+            Gate("buf_gate", "BUF", ("a",), "buf_out"),
+            Gate("not_gate", "NOT", ("a",), "not_out"),
+            Gate("mixed_gate", "AND", ("and_out", "nand_out"), "mixed_out"),
+        ),
+    )
+
+    scores = signal_probability_scores(circuit)
+    by_signal = {score.signal: score for score in scores}
+
+    assert by_signal["and_out"].probability_one == pytest.approx(0.25)
+    assert by_signal["nand_out"].probability_one == pytest.approx(0.75)
+    assert by_signal["or_out"].probability_one == pytest.approx(0.75)
+    assert by_signal["nor_out"].probability_one == pytest.approx(0.25)
+    assert by_signal["xor_out"].probability_one == pytest.approx(0.5)
+    assert by_signal["xnor_out"].probability_one == pytest.approx(0.5)
+    assert by_signal["mux_out"].probability_one == pytest.approx(0.5)
+    assert by_signal["buf_out"].probability_one == pytest.approx(0.5)
+    assert by_signal["not_out"].probability_one == pytest.approx(0.5)
+    assert by_signal["mixed_out"].probability_one == pytest.approx(0.1875)
+    assert by_signal["mixed_out"].input_skews == pytest.approx((-0.25, 0.25))
+    assert by_signal["mixed_out"].ads == pytest.approx(0.5)
+    assert scores[0].signal == "mixed_out"
+
+
+def test_sps_ranks_standalone_antisat_convergence_gate_first() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_antisat(original, key_size=8, seed=42)
+    block_signal = find_antisat_candidates(locked.circuit)[0].block_signal
+
+    first_run = signal_probability_scores(locked.circuit)
+    second_run = signal_probability_scores(locked.circuit)
+
+    assert first_run == second_run
+    assert first_run[0].signal == block_signal
+    assert first_run[0].gate_kind == "AND"
+    assert first_run[0].ads == pytest.approx(0.875)
+
+
+def test_cli_reports_sps_ranking_without_creating_files(tmp_path: Path) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_antisat(original, key_size=8, seed=42)
+    locked_path = tmp_path / "locked.bench"
+    write_bench(locked.circuit, locked_path)
+    files_before = set(tmp_path.iterdir())
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "attack",
+            "antisat-sps",
+            str(locked_path),
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Probability model: independent primary/key inputs" in result.stdout
+    assert "Highest ADS: 0.875000" in result.stdout
+    assert "1. antisat_block [AND]" in result.stdout
+    assert set(tmp_path.iterdir()) == files_before
 
 
 def test_finds_standalone_antisat_without_metadata_or_signal_names() -> None:
