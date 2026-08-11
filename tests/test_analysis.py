@@ -7,21 +7,49 @@ import pytest
 
 from locklab.analysis import (
     find_antisat_candidates,
+    find_sfll_hd0_candidates,
     remove_antisat,
     signal_probability_scores,
 )
 from locklab.bench import load_bench, write_bench
 from locklab.circuit import Circuit, CircuitError, Gate
 from locklab.formats import load_circuit
-from locklab.locking import lock_antisat, lock_rll_antisat
+from locklab.locking import lock_antisat, lock_rll_antisat, lock_sfll_hd0
 from locklab.sat_attack import sat_attack
-from locklab.validation import validate_key
+from locklab.validation import prove_key_equivalence, validate_key
 from locklab.verilog import write_verilog
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ROOT = REPOSITORY_ROOT / "benchmarks/sources/iscas85"
 C17_BENCH = BENCHMARK_ROOT / "c17.bench"
+
+
+def _rename_internal_signals(circuit: Circuit) -> Circuit:
+    ordered_gates = circuit.topological_gates()
+    renamed_signals = {
+        gate.output: f"wire_{index}"
+        for index, gate in enumerate(ordered_gates)
+        if gate.output not in circuit.outputs
+    }
+    renamed = Circuit(
+        name="renamed_circuit",
+        inputs=circuit.inputs,
+        outputs=circuit.outputs,
+        gates=tuple(
+            Gate(
+                name=f"cell_{index}",
+                kind=gate.kind,
+                inputs=tuple(
+                    renamed_signals.get(signal, signal) for signal in gate.inputs
+                ),
+                output=renamed_signals.get(gate.output, gate.output),
+            )
+            for index, gate in enumerate(ordered_gates)
+        ),
+    )
+    renamed.validate()
+    return renamed
 
 
 def test_signal_probability_scores_cover_supported_gate_types() -> None:
@@ -205,6 +233,127 @@ def test_cli_reports_structural_candidate_without_creating_files(
     assert "Suspected key size: 4" in result.stdout
     assert "keyinput_4" in result.stdout
     assert set(tmp_path.iterdir()) == files_before
+
+
+@pytest.mark.parametrize("benchmark", ("c17", "c432", "c880", "c1908"))
+@pytest.mark.parametrize("representation", ("bench", "verilog"))
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices SAT is required to prove the inferred SFLL key",
+)
+def test_finds_sfll_hd0_and_formally_checks_inferred_key(
+    benchmark: str,
+    representation: str,
+    tmp_path: Path,
+) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+    locked = lock_sfll_hd0(original, key_size=4, seed=1)
+    suffix = ".bench" if representation == "bench" else ".v"
+    locked_path = tmp_path / f"{benchmark}_locked{suffix}"
+    if representation == "bench":
+        write_bench(locked.circuit, locked_path)
+    else:
+        if shutil.which("yosys") is None:
+            pytest.skip("Yosys is required")
+        write_verilog(locked.circuit, locked_path)
+    reloaded = load_circuit(locked_path)
+
+    candidates = find_sfll_hd0_candidates(reloaded)
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    expected_mappings = {
+        insertion.key_input: (insertion.source_signal, insertion.correct_bit)
+        for insertion in locked.insertions
+    }
+    recovered_mappings = {
+        mapping.key_input: (mapping.protected_input, mapping.protected_bit)
+        for mapping in candidate.mappings
+    }
+    assert recovered_mappings == expected_mappings
+    assert candidate.protected_output == locked.insertions[0].protected_signal
+    assert candidate.inferred_cube == "".join(map(str, candidate.inferred_key))
+
+    proof = prove_key_equivalence(
+        original,
+        reloaded,
+        key_inputs=candidate.key_inputs,
+        key=candidate.inferred_key,
+    )
+    assert proof.passed
+
+
+def test_sfll_hd0_analysis_uses_neither_metadata_nor_internal_names() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=4, seed=1)
+    renamed = _rename_internal_signals(locked.circuit)
+
+    candidates = find_sfll_hd0_candidates(renamed)
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.inferred_key == locked.key
+    assert candidate.key_inputs == tuple(
+        insertion.key_input for insertion in locked.insertions
+    )
+    assert candidate.protected_inputs == tuple(
+        insertion.source_signal for insertion in locked.insertions
+    )
+    assert "sfll" not in candidate.strip_match_signal
+    assert "sfll" not in candidate.restore_match_signal
+
+
+def test_sfll_hd0_analysis_supports_one_bit_cube() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=1, seed=42)
+
+    candidates = find_sfll_hd0_candidates(locked.circuit)
+
+    assert len(candidates) == 1
+    assert candidates[0].key_size == 1
+    assert candidates[0].inferred_key == locked.key
+
+
+@pytest.mark.parametrize("benchmark", ("c17", "c432", "c880", "c1908"))
+def test_unlocked_benchmarks_have_no_sfll_hd0_candidate(benchmark: str) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+
+    assert find_sfll_hd0_candidates(original) == ()
+
+
+def test_cli_reports_sfll_cube_without_metadata_or_files(tmp_path: Path) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=4, seed=1)
+    locked_path = tmp_path / "locked.bench"
+    write_bench(locked.circuit, locked_path)
+    files_before = set(tmp_path.rglob("*"))
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "attack",
+            "sfll-structural",
+            str(locked_path),
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SFLL-HD0 structural candidates: 1" in result.stdout
+    assert f"Inferred protected cube: {locked.key_string}" in result.stdout
+    for insertion in locked.insertions:
+        expected = (
+            f"{insertion.key_input} -> {insertion.source_signal} "
+            f"(cube bit {insertion.correct_bit})"
+        )
+        assert expected in result.stdout
+    assert not locked_path.with_suffix(".lock.json").exists()
+    assert set(tmp_path.rglob("*")) == files_before
 
 
 def test_remove_standalone_antisat_restores_original_function() -> None:

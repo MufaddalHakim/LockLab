@@ -6,8 +6,8 @@ logic-locking gates, and validates candidate keys.
 
 The current version implements Random Logic Locking (RLL), MUX-based locking,
 type-0 Anti-SAT and SFLL-HD0 defenses, exact and approximate oracle-guided SAT
-attacks, and structural and signal-probability Anti-SAT analysis. All commands
-use the same circuit model and parsers.
+attacks, structural Anti-SAT and SFLL-HD0 analysis, and signal-probability
+Anti-SAT analysis. All commands use the same circuit model and parsers.
 
 ## Setup
 
@@ -233,6 +233,27 @@ This is an exact structural-signature experiment for LockLab's type-0
 construction, not a general signal-probability-skew implementation. An
 obfuscated or synthesized implementation may not retain the same topology, so
 zero candidates does not prove that a circuit contains no Anti-SAT logic.
+
+## Run structural SFLL-HD0 analysis
+
+The SFLL structural command recovers the protected cube from LockLab's explicit
+strip-and-restore topology without an oracle, metadata, or signal-name
+conventions:
+
+```bash
+locklab attack sfll-structural outputs/c432_locked.bench
+```
+
+It locates the hardcoded strip matcher and runtime equality comparator, maps
+each suspected key input to its protected primary input, infers every protected
+cube bit from literal polarity, and reports the protected output. It recognizes
+both multi-input BENCH gates and the two-input AND and XNOR decomposition emitted
+when Yosys lowers Verilog. The command is read-only and creates no files.
+
+This is an exact topology match for LockLab's deliberately visible reference
+implementation. General synthesized or security-aware SFLL netlists may merge
+or rewrite these cones and require functional candidate analysis; zero exact
+matches is therefore not evidence that SFLL protection is absent.
 
 The signal-probability-skew (SPS) command provides a topology-independent
 ranking of suspicious gates:

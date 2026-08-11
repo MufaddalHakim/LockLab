@@ -8,6 +8,7 @@ from pathlib import Path
 
 from locklab.analysis import (
     find_antisat_candidates,
+    find_sfll_hd0_candidates,
     remove_antisat,
     signal_probability_scores,
 )
@@ -89,6 +90,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     structural_parser.add_argument("locked", type=Path)
     structural_parser.add_argument("--top", help="Top module for Verilog input")
+    sfll_structural_parser = attack_subparsers.add_parser(
+        "sfll-structural",
+        help="Locate an explicit SFLL-HD0 block by its gate topology",
+    )
+    sfll_structural_parser.add_argument("locked", type=Path)
+    sfll_structural_parser.add_argument(
+        "--top",
+        help="Top module for Verilog input",
+    )
     removal_parser = attack_subparsers.add_parser(
         "antisat-remove",
         help="Bypass a structurally recognized type-0 Anti-SAT block",
@@ -136,6 +146,9 @@ def main() -> None:
             return
         if args.command == "attack" and args.attack_kind == "antisat-structural":
             _run_antisat_structural_attack(args.locked, top=args.top)
+            return
+        if args.command == "attack" and args.attack_kind == "sfll-structural":
+            _run_sfll_structural_attack(args.locked, top=args.top)
             return
         if args.command == "attack" and args.attack_kind == "antisat-remove":
             _run_antisat_removal_attack(args.locked, top=args.top)
@@ -301,6 +314,33 @@ def _run_antisat_structural_attack(path: Path, *, top: str | None) -> None:
         print(f"  Suspected key size: {candidate.key_size}")
         print(f"  Data inputs: {', '.join(candidate.data_inputs)}")
         print(f"  Suspected key inputs: {', '.join(candidate.key_inputs)}")
+
+
+def _run_sfll_structural_attack(path: Path, *, top: str | None) -> None:
+    circuit = load_circuit(path, top=top)
+    candidates = find_sfll_hd0_candidates(circuit)
+    print(f"SFLL-HD0 structural candidates: {len(candidates)}")
+    if not candidates:
+        print("No matching explicit SFLL-HD0 structure found")
+        return
+
+    for index, candidate in enumerate(candidates, start=1):
+        print(f"Candidate {index}:")
+        print(f"  Protected output: {candidate.protected_output}")
+        print(f"  Protected source: {candidate.protected_source}")
+        print(f"  Stripped output: {candidate.stripped_output}")
+        print(f"  Hardcoded strip matcher: {candidate.strip_match_signal}")
+        print(f"  Runtime equality comparator: {candidate.restore_match_signal}")
+        print(f"  Suspected key size: {candidate.key_size}")
+        print(f"  Protected inputs: {', '.join(candidate.protected_inputs)}")
+        print(f"  Inferred protected cube: {candidate.inferred_cube}")
+        print(f"  Suspected key inputs: {', '.join(candidate.key_inputs)}")
+        print("  Key-to-input mapping:")
+        for mapping in candidate.mappings:
+            print(
+                f"    {mapping.key_input} -> {mapping.protected_input} "
+                f"(cube bit {mapping.protected_bit})"
+            )
 
 
 def _run_antisat_removal_attack(path: Path, *, top: str | None) -> None:

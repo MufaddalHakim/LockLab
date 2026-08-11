@@ -150,6 +150,8 @@ def circuit_from_yosys_json(payload: dict[str, Any]) -> Circuit:
             ):
                 bit_names.setdefault(details["bits"][0], net_name)
 
+    used_signal_names = set(bit_names.values())
+
     def signal_name(bit: int | str) -> str:
         if bit in {"0", "1"}:
             return str(bit)
@@ -157,7 +159,19 @@ def circuit_from_yosys_json(payload: dict[str, Any]) -> Circuit:
             raise VerilogError("unknown and high-impedance signals are not supported")
         if not isinstance(bit, int):
             raise VerilogError(f"unsupported Yosys signal value: {bit!r}")
-        return bit_names.setdefault(bit, f"_bit_{bit}")
+        existing_name = bit_names.get(bit)
+        if existing_name is not None:
+            return existing_name
+
+        base_name = f"_bit_{bit}"
+        generated_name = base_name
+        suffix = 1
+        while generated_name in used_signal_names:
+            generated_name = f"{base_name}_{suffix}"
+            suffix += 1
+        bit_names[bit] = generated_name
+        used_signal_names.add(generated_name)
+        return generated_name
 
     gates: list[Gate] = []
     for cell_name, cell in sorted(cells.items()):

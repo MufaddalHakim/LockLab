@@ -6,7 +6,7 @@ import pytest
 from locklab.bench import load_bench
 from locklab.locking import lock_mux, lock_sfll_hd0
 from locklab.validation import validate_key
-from locklab.verilog import load_verilog, write_verilog
+from locklab.verilog import circuit_from_yosys_json, load_verilog, write_verilog
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -88,3 +88,43 @@ def test_sfll_hd0_locked_verilog_round_trip_validates(tmp_path: Path) -> None:
     )
 
     assert result.passed
+
+
+def test_yosys_fallback_bit_names_do_not_collide_with_named_nets() -> None:
+    payload = {
+        "modules": {
+            "top": {
+                "attributes": {"top": 1},
+                "ports": {
+                    "a": {"direction": "input", "bits": [2]},
+                    "b": {"direction": "input", "bits": [3]},
+                    "result": {"direction": "output", "bits": [20]},
+                },
+                "netnames": {
+                    "_bit_12": {"bits": [13]},
+                },
+                "cells": {
+                    "and_unnamed": {
+                        "type": "$_AND_",
+                        "connections": {"A": [2], "B": [3], "Y": [12]},
+                    },
+                    "or_named": {
+                        "type": "$_OR_",
+                        "connections": {"A": [2], "B": [3], "Y": [13]},
+                    },
+                    "xor_result": {
+                        "type": "$_XOR_",
+                        "connections": {"A": [12], "B": [13], "Y": [20]},
+                    },
+                },
+            }
+        }
+    }
+
+    circuit = circuit_from_yosys_json(payload)
+
+    internal_outputs = {
+        gate.output for gate in circuit.gates if gate.output not in circuit.outputs
+    }
+    assert internal_outputs == {"_bit_12", "_bit_12_1"}
+    assert circuit.evaluate({"a": 0, "b": 1}) == {"result": 1}

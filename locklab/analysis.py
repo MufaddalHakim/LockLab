@@ -38,6 +38,49 @@ class AntiSatRemoval:
 
 
 @dataclass(frozen=True)
+class SfllHd0Mapping:
+    """One recovered runtime-key comparison and protected-cube literal."""
+
+    key_input: str
+    protected_input: str
+    protected_bit: int
+    comparator_signal: str
+    strip_literal_signal: str
+
+
+@dataclass(frozen=True)
+class SfllHd0Candidate:
+    """One circuit region matching LockLab's explicit SFLL-HD0 topology."""
+
+    protected_output: str
+    protected_source: str
+    stripped_output: str
+    strip_match_signal: str
+    restore_match_signal: str
+    mappings: tuple[SfllHd0Mapping, ...]
+
+    @property
+    def key_size(self) -> int:
+        return len(self.mappings)
+
+    @property
+    def key_inputs(self) -> tuple[str, ...]:
+        return tuple(mapping.key_input for mapping in self.mappings)
+
+    @property
+    def protected_inputs(self) -> tuple[str, ...]:
+        return tuple(mapping.protected_input for mapping in self.mappings)
+
+    @property
+    def inferred_key(self) -> tuple[int, ...]:
+        return tuple(mapping.protected_bit for mapping in self.mappings)
+
+    @property
+    def inferred_cube(self) -> str:
+        return "".join(str(bit) for bit in self.inferred_key)
+
+
+@dataclass(frozen=True)
 class SignalProbabilityScore:
     """Signal probability skew and gate-input ADS for one gate output."""
 
@@ -102,6 +145,66 @@ def find_antisat_candidates(circuit: Circuit) -> tuple[AntiSatCandidate, ...]:
     return tuple(candidates)
 
 
+def find_sfll_hd0_candidates(circuit: Circuit) -> tuple[SfllHd0Candidate, ...]:
+    """Find explicit SFLL-HD0 strip-and-restore topology without names or metadata."""
+
+    circuit.validate()
+    drivers = {gate.output: gate for gate in circuit.gates}
+    primary_inputs = set(circuit.inputs)
+    candidates: list[SfllHd0Candidate] = []
+
+    for injection_gate in circuit.topological_gates():
+        if (
+            injection_gate.kind != "XOR"
+            or len(injection_gate.inputs) != 2
+            or injection_gate.output not in circuit.outputs
+        ):
+            continue
+
+        for restore_index, restore_signal in enumerate(injection_gate.inputs):
+            comparisons = _runtime_equality_comparisons(
+                restore_signal,
+                drivers,
+                primary_inputs=primary_inputs,
+            )
+            if comparisons is None:
+                continue
+
+            stripped_output = injection_gate.inputs[1 - restore_index]
+            strip_injection = drivers.get(stripped_output)
+            if (
+                strip_injection is None
+                or strip_injection.kind != "XOR"
+                or len(strip_injection.inputs) != 2
+            ):
+                continue
+
+            for strip_index, strip_signal in enumerate(strip_injection.inputs):
+                strip_literals = _strip_match_literals(
+                    strip_signal,
+                    drivers,
+                    primary_inputs=primary_inputs,
+                )
+                if strip_literals is None:
+                    continue
+                mappings = _map_sfll_comparisons(comparisons, strip_literals)
+                if mappings is None:
+                    continue
+
+                candidates.append(
+                    SfllHd0Candidate(
+                        protected_output=injection_gate.output,
+                        protected_source=strip_injection.inputs[1 - strip_index],
+                        stripped_output=stripped_output,
+                        strip_match_signal=strip_signal,
+                        restore_match_signal=restore_signal,
+                        mappings=mappings,
+                    )
+                )
+
+    return tuple(candidates)
+
+
 def signal_probability_scores(
     circuit: Circuit,
 ) -> tuple[SignalProbabilityScore, ...]:
@@ -136,6 +239,182 @@ def signal_probability_scores(
         )
 
     return tuple(sorted(scores, key=lambda score: score.ads, reverse=True))
+
+
+@dataclass(frozen=True)
+class _EqualityComparison:
+    signal: str
+    inputs: tuple[str, str]
+
+
+@dataclass(frozen=True)
+class _StripLiteral:
+    signal: str
+    data_input: str
+    protected_bit: int
+
+
+def _runtime_equality_comparisons(
+    signal: str,
+    drivers: dict[str, Gate],
+    *,
+    primary_inputs: set[str],
+) -> tuple[_EqualityComparison, ...] | None:
+    visited: set[str] = set()
+
+    def visit(current: str) -> tuple[_EqualityComparison, ...] | None:
+        if current in visited:
+            return None
+        visited.add(current)
+
+        comparison_inputs = _equality_comparison_inputs(
+            current,
+            drivers,
+            primary_inputs=primary_inputs,
+        )
+        if comparison_inputs is not None:
+            return (_EqualityComparison(current, comparison_inputs),)
+
+        gate = drivers.get(current)
+        if gate is None or gate.kind != "AND":
+            return None
+        comparisons: list[_EqualityComparison] = []
+        for gate_input in gate.inputs:
+            branch = visit(gate_input)
+            if branch is None:
+                return None
+            comparisons.extend(branch)
+        return tuple(comparisons)
+
+    comparisons = visit(signal)
+    if comparisons is None or not comparisons:
+        return None
+    if len({comparison.signal for comparison in comparisons}) != len(comparisons):
+        return None
+    return comparisons
+
+
+def _equality_comparison_inputs(
+    signal: str,
+    drivers: dict[str, Gate],
+    *,
+    primary_inputs: set[str],
+) -> tuple[str, str] | None:
+    gate = drivers.get(signal)
+    if gate is None:
+        return None
+    if gate.kind == "XNOR" and len(gate.inputs) == 2:
+        comparison_inputs = gate.inputs
+    elif gate.kind == "NOT" and len(gate.inputs) == 1:
+        xor_gate = drivers.get(gate.inputs[0])
+        if xor_gate is None or xor_gate.kind != "XOR" or len(xor_gate.inputs) != 2:
+            return None
+        comparison_inputs = xor_gate.inputs
+    else:
+        return None
+
+    if (
+        comparison_inputs[0] == comparison_inputs[1]
+        or not set(comparison_inputs) <= primary_inputs
+    ):
+        return None
+    return comparison_inputs
+
+
+def _strip_match_literals(
+    signal: str,
+    drivers: dict[str, Gate],
+    *,
+    primary_inputs: set[str],
+) -> tuple[_StripLiteral, ...] | None:
+    visited: set[str] = set()
+
+    def visit(current: str) -> tuple[_StripLiteral, ...] | None:
+        if current in visited:
+            return None
+        visited.add(current)
+
+        if current in primary_inputs:
+            return (_StripLiteral(current, current, 1),)
+
+        gate = drivers.get(current)
+        if gate is None:
+            return None
+        if (
+            gate.kind in {"BUF", "NOT"}
+            and len(gate.inputs) == 1
+            and gate.inputs[0] in primary_inputs
+        ):
+            return (
+                _StripLiteral(
+                    signal=current,
+                    data_input=gate.inputs[0],
+                    protected_bit=1 if gate.kind == "BUF" else 0,
+                ),
+            )
+        if gate.kind != "AND":
+            return None
+
+        literals: list[_StripLiteral] = []
+        for gate_input in gate.inputs:
+            branch = visit(gate_input)
+            if branch is None:
+                return None
+            literals.extend(branch)
+        return tuple(literals)
+
+    literals = visit(signal)
+    if literals is None or not literals:
+        return None
+    if len({literal.data_input for literal in literals}) != len(literals):
+        return None
+    return literals
+
+
+def _map_sfll_comparisons(
+    comparisons: tuple[_EqualityComparison, ...],
+    strip_literals: tuple[_StripLiteral, ...],
+) -> tuple[SfllHd0Mapping, ...] | None:
+    if len(comparisons) != len(strip_literals):
+        return None
+
+    literals_by_input = {
+        literal.data_input: literal for literal in strip_literals
+    }
+    mappings: list[SfllHd0Mapping] = []
+    matched_data_inputs: set[str] = set()
+    key_inputs: set[str] = set()
+
+    for comparison in comparisons:
+        protected_sides = [
+            signal for signal in comparison.inputs if signal in literals_by_input
+        ]
+        if len(protected_sides) != 1:
+            return None
+        protected_input = protected_sides[0]
+        key_input = next(
+            signal for signal in comparison.inputs if signal != protected_input
+        )
+        literal = literals_by_input[protected_input]
+        if protected_input in matched_data_inputs or key_input in key_inputs:
+            return None
+        matched_data_inputs.add(protected_input)
+        key_inputs.add(key_input)
+        mappings.append(
+            SfllHd0Mapping(
+                key_input=key_input,
+                protected_input=protected_input,
+                protected_bit=literal.protected_bit,
+                comparator_signal=comparison.signal,
+                strip_literal_signal=literal.signal,
+            )
+        )
+
+    if matched_data_inputs != set(literals_by_input):
+        return None
+    if matched_data_inputs & key_inputs:
+        return None
+    return tuple(mappings)
 
 
 def _gate_probability(kind: str, values: tuple[float, ...]) -> float:
