@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from locklab.bench import load_bench
-from locklab.locking import lock_mux
+from locklab.locking import lock_mux, lock_sfll_hd0
 from locklab.validation import validate_key
 from locklab.verilog import load_verilog, write_verilog
 
@@ -60,6 +60,23 @@ def test_mux_locked_verilog_round_trip_validates(tmp_path: Path) -> None:
     original = load_verilog(C17_VERILOG)
     locked = lock_mux(original, key_size=3, seed=9)
     output = tmp_path / "c17-mux-locked.v"
+
+    write_verilog(locked.circuit, output)
+    reloaded = load_verilog(output)
+    result = validate_key(
+        original,
+        reloaded,
+        key_inputs=tuple(item.key_input for item in locked.insertions),
+        key=locked.key,
+    )
+
+    assert result.passed
+
+
+def test_sfll_hd0_locked_verilog_round_trip_validates(tmp_path: Path) -> None:
+    original = load_verilog(C17_VERILOG)
+    locked = lock_sfll_hd0(original, key_size=3, seed=9)
+    output = tmp_path / "c17-sfll-hd0-locked.v"
 
     write_verilog(locked.circuit, output)
     reloaded = load_verilog(output)

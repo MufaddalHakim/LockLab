@@ -20,6 +20,7 @@ from locklab.locking import (
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sfll_hd0,
 )
 from locklab.sat_attack import appsat_attack, sat_attack
 from locklab.validation import ValidationResult, prove_key_equivalence, validate_key
@@ -55,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     lock_parser.add_argument("--top", help="Top module for Verilog input")
     lock_parser.add_argument(
         "--scheme",
-        choices=("rll", "mux", "antisat", "rll-antisat"),
+        choices=("rll", "mux", "antisat", "rll-antisat", "sfll-hd0"),
         default="rll",
         help="Logic-locking scheme (default: rll)",
     )
@@ -175,6 +176,12 @@ def _run_lock(args: argparse.Namespace) -> None:
         lock_result = lock_antisat(source, key_size=args.key_size, seed=args.seed)
     elif args.scheme == "rll-antisat":
         lock_result = lock_rll_antisat(
+            source,
+            key_size=args.key_size,
+            seed=args.seed,
+        )
+    elif args.scheme == "sfll-hd0":
+        lock_result = lock_sfll_hd0(
             source,
             key_size=args.key_size,
             seed=args.seed,

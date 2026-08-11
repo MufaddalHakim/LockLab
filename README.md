@@ -5,9 +5,9 @@ locking. It reads Verilog or BENCH circuits, shows circuit information, inserts
 logic-locking gates, and validates candidate keys.
 
 The current version implements Random Logic Locking (RLL), MUX-based locking,
-a type-0 Anti-SAT defense, exact and approximate oracle-guided SAT attacks, and
-structural and signal-probability Anti-SAT analysis. All commands use the same
-circuit model and parsers.
+type-0 Anti-SAT and SFLL-HD0 defenses, exact and approximate oracle-guided SAT
+attacks, and structural and signal-probability Anti-SAT analysis. All commands
+use the same circuit model and parsers.
 
 ## Setup
 
@@ -118,6 +118,32 @@ locklab lock benchmarks/sources/iscas85/c1908.bench \
 `--key-size` is the total key size and must be divisible by 4 and at least 8.
 LockLab assigns half of the bits to RLL and half to Anti-SAT. The metadata marks
 each insertion's component and records both component sizes.
+
+SFLL-HD0 uses a protected primary-input cube as its secret key:
+
+```bash
+locklab lock benchmarks/sources/iscas85/c432.bench \
+  --scheme sfll-hd0 \
+  --key-size 16 \
+  --seed 42
+```
+
+The key size must be at least one and cannot exceed the circuit's number of
+primary inputs. LockLab selects that many primary inputs and one gate-driven
+primary output using the seed. A hardcoded equality function strips the
+selected output's functionality on the protected cube. A second equality
+function compares the same primary inputs with the runtime key and restores the
+output. With the correct key, the two inversions cancel for every input. A wrong
+key corrupts both the protected cube and the cube represented by the wrong key;
+each cube contains `2^(n-k)` complete input vectors for `n` circuit
+inputs and `k` selected inputs.
+
+This is an explicit, deterministic gate-level implementation of the SFLL-HD0
+Boolean architecture. It does not yet perform security-aware synthesis to merge
+the stripped function into the original logic cone, so the protection logic
+retains a clear structural boundary. The construction and its one-protected-cube
+behavior follow the original
+[SFLL paper](https://acmccs.github.io/papers/p1601-yasinA.pdf).
 
 BENCH input and output use the same command:
 

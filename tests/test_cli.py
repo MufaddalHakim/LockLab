@@ -13,7 +13,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
 
 
-@pytest.mark.parametrize("scheme", ("rll", "mux", "antisat", "rll-antisat"))
+@pytest.mark.parametrize(
+    "scheme",
+    ("rll", "mux", "antisat", "rll-antisat", "sfll-hd0"),
+)
 def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
     locked_path = tmp_path / "outputs/c17_locked.bench"
     lock_command = (

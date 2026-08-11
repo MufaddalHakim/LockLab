@@ -251,6 +251,163 @@ def lock_rll_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResul
     )
 
 
+def lock_sfll_hd0(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
+    """Insert a seeded SFLL-HD0 strip-and-restore block."""
+
+    circuit.validate()
+    if key_size <= 0:
+        raise CircuitError("SFLL-HD0 key size must be greater than zero")
+    if key_size > len(circuit.inputs):
+        raise CircuitError(
+            f"SFLL-HD0 key size {key_size} exceeds "
+            f"{len(circuit.inputs)} primary inputs"
+        )
+
+    driven_outputs = tuple(
+        output
+        for output in circuit.outputs
+        if any(gate.output == output for gate in circuit.gates)
+    )
+    if not driven_outputs:
+        raise CircuitError("SFLL-HD0 requires a gate-driven primary output")
+
+    random_source = random.Random(seed)
+    selected_inputs = tuple(random_source.sample(circuit.inputs, key_size))
+    protected_output = random_source.choice(driven_outputs)
+    key = tuple(random_source.randint(0, 1) for _ in range(key_size))
+
+    used_signals = set(circuit.inputs) | set(circuit.outputs)
+    used_signals.update(gate.output for gate in circuit.gates)
+    used_gate_names = {gate.name for gate in circuit.gates}
+    key_inputs = tuple(
+        _unique_name(f"keyinput_{index}", used_signals)
+        for index in range(key_size)
+    )
+    protected_source = _unique_name(
+        f"{protected_output}_locksrc_sfll_hd0",
+        used_signals,
+    )
+    locked_gates = [
+        Gate(
+            name=gate.name,
+            kind=gate.kind,
+            inputs=gate.inputs,
+            output=protected_source if gate.output == protected_output else gate.output,
+        )
+        for gate in circuit.gates
+    ]
+
+    strip_literals: list[str] = []
+    restore_comparisons: list[str] = []
+    insertions: list[LockInsertion] = []
+    for index, (data_input, correct_bit, key_input) in enumerate(
+        zip(selected_inputs, key, key_inputs)
+    ):
+        strip_literal = _unique_name(
+            f"sfll_strip_literal_{index}",
+            used_signals,
+        )
+        restore_comparison = _unique_name(
+            f"sfll_restore_compare_{index}",
+            used_signals,
+        )
+        locked_gates.extend(
+            (
+                Gate(
+                    name=_unique_name(
+                        f"sfll_strip_literal_gate_{index}",
+                        used_gate_names,
+                    ),
+                    kind="BUF" if correct_bit else "NOT",
+                    inputs=(data_input,),
+                    output=strip_literal,
+                ),
+                Gate(
+                    name=_unique_name(
+                        f"sfll_restore_compare_gate_{index}",
+                        used_gate_names,
+                    ),
+                    kind="XNOR",
+                    inputs=(data_input, key_input),
+                    output=restore_comparison,
+                ),
+            )
+        )
+        strip_literals.append(strip_literal)
+        restore_comparisons.append(restore_comparison)
+        insertions.append(
+            LockInsertion(
+                key_index=index,
+                key_input=key_input,
+                correct_bit=correct_bit,
+                gate_kind="XNOR",
+                protected_signal=protected_output,
+                source_signal=data_input,
+            )
+        )
+
+    if key_size == 1:
+        strip_match = strip_literals[0]
+        restore_match = restore_comparisons[0]
+    else:
+        strip_match = _unique_name("sfll_strip_match", used_signals)
+        restore_match = _unique_name("sfll_restore_match", used_signals)
+        locked_gates.extend(
+            (
+                Gate(
+                    name=_unique_name("sfll_strip_match_gate", used_gate_names),
+                    kind="AND",
+                    inputs=tuple(strip_literals),
+                    output=strip_match,
+                ),
+                Gate(
+                    name=_unique_name(
+                        "sfll_restore_match_gate",
+                        used_gate_names,
+                    ),
+                    kind="AND",
+                    inputs=tuple(restore_comparisons),
+                    output=restore_match,
+                ),
+            )
+        )
+
+    stripped_output = _unique_name(
+        f"{protected_output}_sfll_stripped",
+        used_signals,
+    )
+    locked_gates.extend(
+        (
+            Gate(
+                name=_unique_name("sfll_strip_output_gate", used_gate_names),
+                kind="XOR",
+                inputs=(protected_source, strip_match),
+                output=stripped_output,
+            ),
+            Gate(
+                name=_unique_name("sfll_restore_output_gate", used_gate_names),
+                kind="XOR",
+                inputs=(stripped_output, restore_match),
+                output=protected_output,
+            ),
+        )
+    )
+
+    locked = Circuit(
+        name=f"{circuit.name}_sfll_hd0",
+        inputs=(*circuit.inputs, *key_inputs),
+        outputs=circuit.outputs,
+        gates=tuple(locked_gates),
+    )
+    locked.validate()
+    return LockResult(
+        circuit=locked,
+        key=key,
+        seed=seed,
+        insertions=tuple(insertions),
+    )
+
+
 def _add_antisat_block(
     circuit: Circuit,
     *,

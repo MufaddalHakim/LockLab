@@ -4,7 +4,13 @@ import pytest
 
 from locklab.bench import load_bench, write_bench
 from locklab.circuit import CircuitError
-from locklab.locking import lock_antisat, lock_mux, lock_rll, lock_rll_antisat
+from locklab.locking import (
+    lock_antisat,
+    lock_mux,
+    lock_rll,
+    lock_rll_antisat,
+    lock_sfll_hd0,
+)
 from locklab.validation import validate_key
 
 
@@ -220,3 +226,67 @@ def test_rll_antisat_rejects_invalid_total_key_size(key_size: int) -> None:
 
     with pytest.raises(CircuitError, match="divisible by 4 and at least 8"):
         lock_rll_antisat(original, key_size=key_size, seed=0)
+
+
+def test_sfll_hd0_is_deterministic_and_uses_primary_input_cube() -> None:
+    original = load_bench(C17_BENCH)
+
+    first = lock_sfll_hd0(original, key_size=3, seed=42)
+    second = lock_sfll_hd0(original, key_size=3, seed=42)
+
+    assert first == second
+    assert len(first.key) == 3
+    assert len(first.circuit.inputs) == len(original.inputs) + 3
+    selected_inputs = tuple(item.source_signal for item in first.insertions)
+    assert len(set(selected_inputs)) == 3
+    assert set(selected_inputs) <= set(original.inputs)
+    assert len({item.protected_signal for item in first.insertions}) == 1
+
+
+def test_sfll_hd0_correct_key_passes_and_wrong_key_has_two_error_cubes() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=3, seed=42)
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+
+    correct = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=locked.key,
+    )
+    wrong_key = (1 - locked.key[0], *locked.key[1:])
+    wrong = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=wrong_key,
+    )
+
+    expected_wrong_vectors = 2 * (1 << (len(original.inputs) - len(locked.key)))
+    assert correct.passed
+    assert correct.method == "exhaustive"
+    assert not wrong.passed
+    assert len(wrong.mismatches) == expected_wrong_vectors
+
+
+def test_sfll_hd0_supports_a_one_bit_protected_cube() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=1, seed=7)
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+
+    result = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=locked.key,
+    )
+
+    assert result.passed
+
+
+@pytest.mark.parametrize("key_size", (0, 6))
+def test_sfll_hd0_rejects_invalid_key_size(key_size: int) -> None:
+    original = load_bench(C17_BENCH)
+
+    with pytest.raises(CircuitError, match="SFLL-HD0 key size"):
+        lock_sfll_hd0(original, key_size=key_size, seed=0)
