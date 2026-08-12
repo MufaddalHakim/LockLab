@@ -378,46 +378,81 @@ locklab attack sat \
 
 ## Run the comparative benchmark study
 
-The tracked study configurations apply the same measurement pipeline to RLL,
-MUX locking, Anti-SAT, compound RLL + Anti-SAT, SFLL-HD0, and SFLL-HDh. Inspect
-the seven-case c17 smoke matrix without executing it:
+From the repository root, activate OSS CAD Suite and the project environment:
+
+```bash
+source "${HOME}/Tools/oss-cad-suite/environment"
+source .venv/bin/activate
+locklab doctor
+```
+
+If `.venv` does not exist yet, complete the [Setup](#setup) steps first. Inspect
+the smoke-study cases without executing them:
 
 ```bash
 locklab study configs/comparative_smoke.json --dry-run
 ```
 
-Run the smoke matrix, followed by the full 312-case matrix:
+Execute the smoke study first. If it completes successfully, run the full
+comparative matrix:
 
 ```bash
 locklab study configs/comparative_smoke.json
 locklab study configs/comparative_matrix.json
 ```
 
-Activate OSS CAD Suite first because each supported case formally checks the
-planted key and runs Yices-backed attacks. The full matrix covers c17, c432,
-c880, and c1908; three seeds; multiple key sizes; SFLL distances one and two;
-and AppSAT error thresholds 0.01 and 0.05. The JSON configuration is the
-experiment specification, including the sample count and per-solver-call
-timeout.
+Use a bounded pilot when testing a configuration change:
 
-Each completed case records locking overhead, formal equivalence, exact-SAT
-distinguishing inputs and solver calls, AppSAT sampled error, structural
-detections, SPS/ADS rank, runtime, seed, tool versions, Git provenance, and a
-Material Passport. Each record also hashes the exact benchmark and study
-configuration used. Raw append-only records are written to
-`runs/<study-name>.jsonl`; a normalized summary is rebuilt at
-`runs/<study-name>.csv`. Both generated files are ignored by Git.
+```bash
+locklab study configs/comparative_matrix.json --limit 12
+```
 
-Execution is resumable by default. A repeated command skips existing cases,
-while `--retry-failures` reruns only failed, partial, timed-out, or unsupported
-records. `--limit N` is useful for a short pilot. LockLab refuses to mix records
-when the configuration file's SHA-256 digest changes. Invalid scheme/benchmark
-combinations remain visible as `unsupported` rows instead of disappearing from
-the dataset.
+Every raw record is flushed immediately. Rerunning the same command skips
+recorded cases and resumes at the first missing one. To rerun only non-completed
+records, use:
 
-Runtime values are meaningful only within a controlled environment. AppSAT's
-reported error is a seeded sample estimate and must not be interpreted as a
-formal proof; the separate formal-equivalence field provides that distinction.
+```bash
+locklab study configs/comparative_matrix.json --retry-failures
+```
+
+The repository may already contain ignored local results from an earlier run.
+In that case the command reports those rows as skipped. For an independent run
+without overwriting them, copy the configuration, change its JSON `name` to a
+new value such as `comparative_matrix_manual`, and execute the copy:
+
+```bash
+cp configs/comparative_matrix.json configs/comparative_matrix_manual.json
+# Edit "name" in the copied file to "comparative_matrix_manual".
+locklab study configs/comparative_matrix_manual.json
+```
+
+This writes `runs/comparative_matrix_manual.jsonl` and
+`runs/comparative_matrix_manual.csv`.
+
+The commands print a summary similar to this illustrative example:
+
+```text
+Study: comparative_smoke
+Planned cases: 7
+Executed cases: 7
+Skipped existing cases: 0
+Statuses: completed=7
+Raw records: /path/to/LockLab/runs/comparative_smoke.jsonl
+CSV summary: /path/to/LockLab/runs/comparative_smoke.csv
+```
+
+Raw records and CSV summaries are written to:
+
+```text
+runs/comparative_smoke.jsonl
+runs/comparative_smoke.csv
+runs/comparative_matrix.jsonl
+runs/comparative_matrix.csv
+```
+
+The generated files are ignored by Git. Use JSONL for the complete records and
+CSV for spreadsheets or plotting. The command records unsupported, failed,
+partial, and timed-out cases instead of silently omitting them.
 
 ## Tests
 
