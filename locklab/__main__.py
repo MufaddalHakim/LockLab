@@ -26,6 +26,7 @@ from locklab.locking import (
 )
 from locklab.sat_attack import appsat_attack, sat_attack
 from locklab.sfll_analysis import assess_sfll_hd0
+from locklab.sfll_hd_analysis import find_sfll_hd_candidates
 from locklab.study import (
     expand_study_cases,
     load_study_configuration,
@@ -133,6 +134,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=32,
         help="Largest functional restore cone to assess (default: 32)",
     )
+    sfll_fall_parser = attack_subparsers.add_parser(
+        "sfll-fall",
+        help="Run the FALL functional attack on explicit SFLL-HDh",
+    )
+    sfll_fall_parser.add_argument("locked", type=Path)
+    sfll_fall_parser.add_argument(
+        "--hamming-distance",
+        type=int,
+        required=True,
+        help="Known SFLL-HDh distance parameter",
+    )
+    sfll_fall_parser.add_argument(
+        "--top",
+        help="Top module for Verilog input",
+    )
+    sfll_fall_parser.add_argument(
+        "--max-key-size",
+        type=int,
+        default=32,
+        help="Largest SFLL key support to analyze (default: 32)",
+    )
+    sfll_fall_parser.add_argument(
+        "--solver-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout for each FALL SAT query (default: 30 seconds)",
+    )
     removal_parser = attack_subparsers.add_parser(
         "antisat-remove",
         help="Bypass a structurally recognized type-0 Anti-SAT block",
@@ -210,6 +238,15 @@ def main() -> None:
                 args.locked,
                 top=args.top,
                 max_key_size=args.max_key_size,
+            )
+            return
+        if args.command == "attack" and args.attack_kind == "sfll-fall":
+            _run_sfll_fall_attack(
+                args.locked,
+                hamming_distance=args.hamming_distance,
+                top=args.top,
+                max_key_size=args.max_key_size,
+                solver_timeout_seconds=args.solver_timeout,
             )
             return
         if args.command == "attack" and args.attack_kind == "antisat-remove":
@@ -509,6 +546,54 @@ def _run_sfll_functional_attack(
             print(
                 f"    {mapping.key_input} -> {mapping.protected_input} "
                 f"(cube bit {mapping.protected_bit}, {unateness} unate)"
+            )
+
+
+def _run_sfll_fall_attack(
+    path: Path,
+    *,
+    hamming_distance: int,
+    top: str | None,
+    max_key_size: int,
+    solver_timeout_seconds: float,
+) -> None:
+    circuit = load_circuit(path, top=top)
+    candidates = find_sfll_hd_candidates(
+        circuit,
+        hamming_distance=hamming_distance,
+        max_key_size=max_key_size,
+        solver_timeout_seconds=solver_timeout_seconds,
+    )
+    print(f"FALL SFLL-HDh candidates: {len(candidates)}")
+    print(f"Known Hamming distance: {hamming_distance}")
+    if not candidates:
+        print(
+            "No formally verified FALL candidate found; this may be outside "
+            "Distance2H/SlidingWindow applicability or may be synthesized."
+        )
+        return
+
+    for index, candidate in enumerate(candidates, start=1):
+        print(f"Candidate {index}:")
+        print(f"  Recovery method: {candidate.recovery_method}")
+        print(f"  Protected output: {candidate.protected_output}")
+        print(f"  Protected source: {candidate.protected_source}")
+        print(f"  Stripped output: {candidate.stripped_output}")
+        print(f"  Strip function: {candidate.strip_match_signal}")
+        print(f"  Restore function: {candidate.restore_match_signal}")
+        print(f"  Key size: {candidate.key_size}")
+        print(f"  Protected inputs: {', '.join(candidate.protected_inputs)}")
+        print(f"  Recovered key: {candidate.inferred_key_string}")
+        print(f"  Protected cubes: {candidate.protected_cube_count}")
+        print(f"  FALL SAT solver calls: {candidate.solver_calls}")
+        print("  Key-to-input mapping:")
+        for mapping, bit in zip(
+            candidate.mappings,
+            candidate.inferred_key,
+        ):
+            print(
+                f"    {mapping.key_input} -> {mapping.protected_input} "
+                f"(key bit {bit})"
             )
 
 

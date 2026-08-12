@@ -323,6 +323,52 @@ reference. Functional synthesized one-bit candidates are also excluded because
 ordinary two-input circuit logic produces too many ambiguous matches; the exact
 mode continues to support one-bit SFLL-HD0.
 
+## Run the FALL attack on SFLL-HDh
+
+LockLab also implements the SFLL-HDh portion of the published FALL attack:
+
+[Functional Analysis Attacks on Logic Locking](https://cse.iitk.ac.in/users/spramod/papers/fall19.pdf)
+
+The attack uses comparator analysis, support-set matching, and the paper's
+SAT-based `Distance2H` and `SlidingWindow` procedures to recover the protected
+cube from the locked netlist. It does not use lock metadata, internal signal
+names, or an unlocked oracle. The attack parameter `h` is required because it
+is part of the published attacker model. The final candidate is formally
+checked against the exact SFLL-HDh strip function.
+
+For a documented `Distance2H` case:
+
+```bash
+locklab lock benchmarks/sources/iscas85/c432.bench \
+  --scheme sfll-hd \
+  --key-size 8 \
+  --hamming-distance 2 \
+  --seed 42
+
+locklab attack sfll-fall outputs/c432_locked.bench \
+  --hamming-distance 2
+```
+
+The command is read-only and prints a candidate summary similar to:
+
+```text
+FALL SFLL-HDh candidates: 1
+Known Hamming distance: 2
+Candidate 1:
+  Recovery method: distance2h
+  Key size: 8
+  Recovered key: 01000000
+  Protected cubes: 28
+  FALL SAT solver calls: 2
+```
+
+`Distance2H` applies when `4h <= m`, where `m` is the protected key-input
+count. `SlidingWindow` applies when `h < floor(m/2)`. A case outside those
+conditions is reported as having no FALL candidate; that is an algorithmic
+applicability result, not evidence that SFLL is secure. The current implementation
+targets LockLab's explicit combinational reference construction. Synthesis may
+rewrite the cones and requires a separate synthesized-netlist extension.
+
 Current whole-circuit ABC results are:
 
 | Benchmark | Key size | ABC library | Assessment | Formal inferred-key result |
