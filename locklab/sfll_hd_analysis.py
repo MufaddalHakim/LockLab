@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from math import comb
+from typing import Iterable
 
 from locklab.circuit import Circuit, Gate
 from locklab.cnf import CNF, encode_circuit, encode_gate
 from locklab.sat_solver import solve_cnf
+from locklab.validation import ValidationResult, prove_key_equivalence
 
 
 @dataclass(frozen=True)
@@ -29,10 +31,11 @@ class SfllHdCandidate:
     """
 
     protected_output: str
-    protected_source: str
-    stripped_output: str
+    protected_source: str | None
+    stripped_output: str | None
     strip_match_signal: str
     restore_match_signal: str
+    match_type: str
     hamming_distance: int
     recovery_method: str
     mappings: tuple[SfllHdMapping, ...]
@@ -61,6 +64,14 @@ class SfllHdCandidate:
 
 
 @dataclass(frozen=True)
+class SfllHdConfirmation:
+    """Whole-circuit oracle confirmation for one FALL-recovered key."""
+
+    candidate: SfllHdCandidate
+    validation: ValidationResult
+
+
+@dataclass(frozen=True)
 class _Comparator:
     signal: str
     inputs: tuple[str, str]
@@ -71,6 +82,17 @@ class _Recovery:
     method: str
     key: tuple[int, ...]
     solver_calls: int
+
+
+@dataclass(frozen=True)
+class _FunctionalRestore:
+    signal: str
+    pairs: tuple[tuple[str, str, str], ...]
+    observable_outputs: frozenset[str]
+
+    @property
+    def key_size(self) -> int:
+        return len(self.pairs)
 
 
 def find_sfll_hd_candidates(
@@ -167,6 +189,128 @@ def find_sfll_hd_candidates(
                     stripped_output=stripped_output,
                     strip_match_signal=strip_signal,
                     restore_match_signal=restore_signal,
+                    match_type="exact topology",
+                    hamming_distance=hamming_distance,
+                    recovery_method=recovery.method,
+                    mappings=mappings,
+                    inferred_key=recovery.key,
+                    solver_calls=recovery.solver_calls,
+                )
+                if candidate not in results:
+                    results.append(candidate)
+
+    if results:
+        return tuple(results)
+    return _find_functional_candidates(
+        circuit,
+        hamming_distance=hamming_distance,
+        max_key_size=max_key_size,
+        solver_timeout_seconds=solver_timeout_seconds,
+    )
+
+
+def confirm_sfll_hd_candidates(
+    reference: Circuit,
+    locked: Circuit,
+    candidates: tuple[SfllHdCandidate, ...],
+    *,
+    solver_timeout_seconds: float = 30.0,
+) -> tuple[SfllHdConfirmation, ...]:
+    """Run FALL's oracle-backed key-confirmation stage on each candidate.
+
+    A confirmation passes only when a formal whole-circuit miter proves that
+    the locked circuit under the recovered key is equivalent to the supplied
+    unlocked reference. A failing result includes a distinguishing input.
+    """
+
+    if solver_timeout_seconds <= 0:
+        raise ValueError("FALL SAT solver timeout must be greater than zero")
+    return tuple(
+        SfllHdConfirmation(
+            candidate=candidate,
+            validation=prove_key_equivalence(
+                reference,
+                locked,
+                key_inputs=candidate.key_inputs,
+                key=candidate.inferred_key,
+                solver_timeout_seconds=solver_timeout_seconds,
+            ),
+        )
+        for candidate in candidates
+    )
+
+
+def _find_functional_candidates(
+    circuit: Circuit,
+    *,
+    hamming_distance: int,
+    max_key_size: int,
+    solver_timeout_seconds: float,
+) -> tuple[SfllHdCandidate, ...]:
+    """Recover SFLL-HDh after synthesis when both functional cones survive.
+
+    The construction first proves a pairwise-comparison restore cone is an
+    exact Hamming-distance function, then seeks an observable data-only cone
+    that chooses one input from every compared pair. FALL is run on that strip
+    cone and its recovered key is formally checked again. This intentionally
+    returns no candidate when synthesis absorbs the strip function into
+    unrelated original logic.
+    """
+
+    supports = _fanin_supports(circuit)
+    observable_outputs = _observable_outputs(circuit)
+    results: list[SfllHdCandidate] = []
+
+    for restore in _find_functional_restores(
+        circuit,
+        hamming_distance=hamming_distance,
+        max_key_size=max_key_size,
+        supports=supports,
+        observable_outputs=observable_outputs,
+        solver_timeout_seconds=solver_timeout_seconds,
+    ):
+        for gate in circuit.topological_gates():
+            strip_signal = gate.output
+            strip_support = supports[strip_signal]
+            if len(strip_support) != restore.key_size or any(
+                len(strip_support & frozenset((first, second))) != 1
+                for first, second, _ in restore.pairs
+            ):
+                continue
+            reachable_outputs = (
+                observable_outputs[strip_signal] & restore.observable_outputs
+            )
+            if not reachable_outputs:
+                continue
+            mappings = tuple(
+                SfllHdMapping(
+                    key_input=(
+                        second if first in strip_support else first
+                    ),
+                    protected_input=(
+                        first if first in strip_support else second
+                    ),
+                    comparator_signal=comparator_signal,
+                )
+                for first, second, comparator_signal in restore.pairs
+            )
+            recovery = _recover_key_with_fall(
+                circuit,
+                strip_signal,
+                mappings,
+                hamming_distance=hamming_distance,
+                solver_timeout_seconds=solver_timeout_seconds,
+            )
+            if recovery is None:
+                continue
+            for protected_output in sorted(reachable_outputs):
+                candidate = SfllHdCandidate(
+                    protected_output=protected_output,
+                    protected_source=None,
+                    stripped_output=None,
+                    strip_match_signal=strip_signal,
+                    restore_match_signal=restore.signal,
+                    match_type="functional candidate",
                     hamming_distance=hamming_distance,
                     recovery_method=recovery.method,
                     mappings=mappings,
@@ -177,6 +321,188 @@ def find_sfll_hd_candidates(
                     results.append(candidate)
 
     return tuple(results)
+
+
+def _find_functional_restores(
+    circuit: Circuit,
+    *,
+    hamming_distance: int,
+    max_key_size: int,
+    supports: dict[str, frozenset[str]],
+    observable_outputs: dict[str, frozenset[str]],
+    solver_timeout_seconds: float,
+) -> tuple[_FunctionalRestore, ...]:
+    possible: list[_FunctionalRestore] = []
+    ordered = circuit.topological_gates()
+    topological_index = {
+        gate.output: index for index, gate in enumerate(ordered)
+    }
+    for gate in ordered:
+        signal = gate.output
+        support = supports[signal]
+        outputs = observable_outputs[signal]
+        if not outputs or len(support) < 4 or len(support) % 2:
+            continue
+        inputs = tuple(
+            primary_input
+            for primary_input in circuit.inputs
+            if primary_input in support
+        )
+        if (
+            len(inputs) // 2 > max_key_size
+            or hamming_distance >= len(inputs) // 2
+        ):
+            continue
+        pairs = _match_functional_restore_support(
+            circuit,
+            signal,
+            inputs=inputs,
+            supports=supports,
+            topological_index=topological_index,
+            hamming_distance=hamming_distance,
+            solver_timeout_seconds=solver_timeout_seconds,
+        )
+        if pairs is None:
+            continue
+        possible.append(
+            _FunctionalRestore(
+                signal=signal,
+                pairs=pairs,
+                observable_outputs=outputs,
+            )
+        )
+
+    maximal = [
+        candidate
+        for candidate in possible
+        if not any(
+            candidate.key_size < other.key_size
+            and candidate.observable_outputs & other.observable_outputs
+            for other in possible
+        )
+    ]
+    return tuple(maximal)
+
+
+def _match_functional_restore_support(
+    circuit: Circuit,
+    signal: str,
+    *,
+    inputs: tuple[str, ...],
+    supports: dict[str, frozenset[str]],
+    topological_index: dict[str, int],
+    hamming_distance: int,
+    solver_timeout_seconds: float,
+) -> tuple[tuple[str, str, str], ...] | None:
+    """Find pairwise comparators, then prove an exact-distance restore cone."""
+
+    cone_signals = _fanin_signals(circuit, signal)
+    comparator_signals: dict[tuple[str, str], str] = {}
+    for first_index, first in enumerate(inputs):
+        for second in inputs[first_index + 1 :]:
+            pair_support = frozenset((first, second))
+            signals = [
+                candidate_signal
+                for candidate_signal in cone_signals
+                if supports[candidate_signal] == pair_support
+            ]
+            if not signals:
+                continue
+            comparator_signals[(first, second)] = max(
+                signals,
+                key=lambda candidate_signal: topological_index.get(
+                    candidate_signal,
+                    -1,
+                ),
+            )
+    for pairing in _pair_matchings(inputs, comparator_signals):
+        if _prove_restore_exact_distance(
+            circuit,
+            signal,
+            pairs=pairing,
+            hamming_distance=hamming_distance,
+            solver_timeout_seconds=solver_timeout_seconds,
+        ):
+            return pairing
+    return None
+
+
+def _pair_matchings(
+    inputs: tuple[str, ...],
+    comparator_signals: dict[tuple[str, str], str],
+    *,
+    limit: int = 64,
+) -> Iterable[tuple[tuple[str, str, str], ...]]:
+    found = 0
+
+    def visit(
+        remaining: tuple[str, ...],
+        pairs: list[tuple[str, str, str]],
+    ) -> Iterable[tuple[tuple[str, str, str], ...]]:
+        nonlocal found
+        if found >= limit:
+            return
+        if not remaining:
+            found += 1
+            yield tuple(pairs)
+            return
+        first = remaining[0]
+        for index, second in enumerate(remaining[1:], start=1):
+            comparison = comparator_signals.get((first, second))
+            if comparison is None:
+                continue
+            pairs.append((first, second, comparison))
+            yield from visit(
+                remaining[1:index] + remaining[index + 1 :],
+                pairs,
+            )
+            pairs.pop()
+
+    yield from visit(inputs, [])
+
+
+def _prove_restore_exact_distance(
+    circuit: Circuit,
+    signal: str,
+    *,
+    pairs: tuple[tuple[str, str, str], ...],
+    hamming_distance: int,
+    solver_timeout_seconds: float,
+) -> bool:
+    support = tuple(
+        primary_input
+        for primary_input in circuit.inputs
+        if primary_input
+        in {
+            item
+            for first, second, _ in pairs
+            for item in (first, second)
+        }
+    )
+    cone = _cone_circuit(circuit, signal, support=support)
+    cnf, variables, actual = _encode_cone(cone, signal)
+    mismatches = [
+        _encode_binary(
+            cnf,
+            "XOR",
+            variables[first],
+            variables[second],
+            name=f"fall:restore-mismatch:{index}",
+        )
+        for index, (first, second, _) in enumerate(pairs)
+    ]
+    expected = _encode_exact_weight(
+        cnf,
+        mismatches,
+        hamming_distance=hamming_distance,
+        prefix="fall:restore-distance",
+    )
+    return _prove_equal(
+        cnf,
+        actual,
+        expected,
+        solver_timeout_seconds=solver_timeout_seconds,
+    )
 
 
 def _find_comparators(
@@ -639,6 +965,27 @@ def _add_equal(cnf: CNF, first: int, second: int) -> None:
     cnf.add_clause(first, -second)
 
 
+def _prove_equal(
+    cnf: CNF,
+    actual: int,
+    expected: int,
+    *,
+    solver_timeout_seconds: float,
+) -> bool:
+    difference = _encode_binary(
+        cnf,
+        "XOR",
+        actual,
+        expected,
+        name="fall:function-difference",
+    )
+    cnf.add_clause(difference)
+    return not solve_cnf(
+        cnf,
+        timeout_seconds=solver_timeout_seconds,
+    ).satisfiable
+
+
 def _fanin_supports(circuit: Circuit) -> dict[str, frozenset[str]]:
     supports = {"0": frozenset(), "1": frozenset()}
     supports.update(
@@ -657,6 +1004,20 @@ def _consumers(circuit: Circuit) -> dict[str, frozenset[str]]:
         for signal in gate.inputs:
             mutable[signal].add(gate.output)
     return {signal: frozenset(outputs) for signal, outputs in mutable.items()}
+
+
+def _observable_outputs(circuit: Circuit) -> dict[str, frozenset[str]]:
+    outputs_by_signal: dict[str, set[str]] = defaultdict(set)
+    for output in circuit.outputs:
+        outputs_by_signal[output].add(output)
+    for gate in reversed(circuit.topological_gates()):
+        reached_outputs = outputs_by_signal[gate.output]
+        for gate_input in gate.inputs:
+            outputs_by_signal[gate_input].update(reached_outputs)
+    return {
+        signal: frozenset(outputs)
+        for signal, outputs in outputs_by_signal.items()
+    }
 
 
 def _cone_circuit(

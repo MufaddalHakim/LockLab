@@ -26,7 +26,10 @@ from locklab.locking import (
 )
 from locklab.sat_attack import appsat_attack, sat_attack
 from locklab.sfll_analysis import assess_sfll_hd0
-from locklab.sfll_hd_analysis import find_sfll_hd_candidates
+from locklab.sfll_hd_analysis import (
+    confirm_sfll_hd_candidates,
+    find_sfll_hd_candidates,
+)
 from locklab.study import (
     expand_study_cases,
     load_study_configuration,
@@ -150,6 +153,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Top module for Verilog input",
     )
     sfll_fall_parser.add_argument(
+        "--oracle",
+        type=Path,
+        help="Unlocked reference circuit for formal key confirmation",
+    )
+    sfll_fall_parser.add_argument(
+        "--oracle-top",
+        help="Top module for a Verilog oracle",
+    )
+    sfll_fall_parser.add_argument(
         "--max-key-size",
         type=int,
         default=32,
@@ -241,13 +253,17 @@ def main() -> None:
             )
             return
         if args.command == "attack" and args.attack_kind == "sfll-fall":
-            _run_sfll_fall_attack(
+            confirmed = _run_sfll_fall_attack(
                 args.locked,
                 hamming_distance=args.hamming_distance,
                 top=args.top,
+                oracle_path=args.oracle,
+                oracle_top=args.oracle_top,
                 max_key_size=args.max_key_size,
                 solver_timeout_seconds=args.solver_timeout,
             )
+            if args.oracle is not None:
+                raise SystemExit(0 if confirmed else 1)
             return
         if args.command == "attack" and args.attack_kind == "antisat-remove":
             _run_antisat_removal_attack(args.locked, top=args.top)
@@ -554,9 +570,13 @@ def _run_sfll_fall_attack(
     *,
     hamming_distance: int,
     top: str | None,
+    oracle_path: Path | None,
+    oracle_top: str | None,
     max_key_size: int,
     solver_timeout_seconds: float,
-) -> None:
+) -> bool:
+    if oracle_path is None and oracle_top is not None:
+        raise CircuitError("--oracle-top requires --oracle")
     circuit = load_circuit(path, top=top)
     candidates = find_sfll_hd_candidates(
         circuit,
@@ -569,16 +589,35 @@ def _run_sfll_fall_attack(
     if not candidates:
         print(
             "No formally verified FALL candidate found; this may be outside "
-            "Distance2H/SlidingWindow applicability or may be synthesized."
+            "Distance2H/SlidingWindow applicability, or synthesis may have "
+            "absorbed the comparison cones."
         )
-        return
+        return False
+
+    confirmations = (
+        confirm_sfll_hd_candidates(
+            load_circuit(oracle_path, top=oracle_top),
+            circuit,
+            candidates,
+            solver_timeout_seconds=solver_timeout_seconds,
+        )
+        if oracle_path is not None
+        else ()
+    )
 
     for index, candidate in enumerate(candidates, start=1):
         print(f"Candidate {index}:")
+        print(f"  Match type: {candidate.match_type}")
         print(f"  Recovery method: {candidate.recovery_method}")
         print(f"  Protected output: {candidate.protected_output}")
-        print(f"  Protected source: {candidate.protected_source}")
-        print(f"  Stripped output: {candidate.stripped_output}")
+        print(
+            "  Protected source: "
+            f"{candidate.protected_source or 'unavailable after mapping'}"
+        )
+        print(
+            "  Stripped output: "
+            f"{candidate.stripped_output or 'unavailable after mapping'}"
+        )
         print(f"  Strip function: {candidate.strip_match_signal}")
         print(f"  Restore function: {candidate.restore_match_signal}")
         print(f"  Key size: {candidate.key_size}")
@@ -595,6 +634,20 @@ def _run_sfll_fall_attack(
                 f"    {mapping.key_input} -> {mapping.protected_input} "
                 f"(key bit {bit})"
             )
+        if confirmations:
+            validation = confirmations[index - 1].validation
+            if validation.passed:
+                print("  Oracle confirmation: PASS (formal SAT miter UNSAT)")
+            else:
+                mismatch = validation.mismatches[0]
+                print("  Oracle confirmation: FAIL")
+                print(f"  Distinguishing input: {mismatch.inputs}")
+                print(f"  Oracle output: {mismatch.reference_output}")
+                print(f"  Candidate output: {mismatch.candidate_output}")
+
+    return not confirmations or any(
+        confirmation.validation.passed for confirmation in confirmations
+    )
 
 
 def _run_antisat_removal_attack(path: Path, *, top: str | None) -> None:

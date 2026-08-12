@@ -331,10 +331,10 @@ LockLab also implements the SFLL-HDh portion of the published FALL attack:
 
 The attack uses comparator analysis, support-set matching, and the paper's
 SAT-based `Distance2H` and `SlidingWindow` procedures to recover the protected
-cube from the locked netlist. It does not use lock metadata, internal signal
-names, or an unlocked oracle. The attack parameter `h` is required because it
-is part of the published attacker model. The final candidate is formally
-checked against the exact SFLL-HDh strip function.
+cube from the locked netlist. It does not use lock metadata or internal signal
+names. The attack parameter `h` is required because it is part of the published
+attacker model. The final candidate is formally checked against the exact
+SFLL-HDh strip function.
 
 For a documented `Distance2H` case:
 
@@ -347,6 +347,15 @@ locklab lock benchmarks/sources/iscas85/c432.bench \
 
 locklab attack sfll-fall outputs/c432_locked.bench \
   --hamming-distance 2
+```
+
+To perform FALL's oracle-backed key-confirmation stage, add the unlocked
+benchmark as an oracle:
+
+```bash
+locklab attack sfll-fall outputs/c432_locked.bench \
+  --hamming-distance 2 \
+  --oracle benchmarks/sources/iscas85/c432.bench
 ```
 
 The command is read-only and prints a candidate summary similar to:
@@ -362,12 +371,20 @@ Candidate 1:
   FALL SAT solver calls: 2
 ```
 
+With `--oracle`, a confirmed candidate additionally prints:
+
+```text
+  Oracle confirmation: PASS (formal SAT miter UNSAT)
+```
+
 `Distance2H` applies when `4h <= m`, where `m` is the protected key-input
 count. `SlidingWindow` applies when `h < floor(m/2)`. A case outside those
 conditions is reported as having no FALL candidate; that is an algorithmic
-applicability result, not evidence that SFLL is secure. The current implementation
-targets LockLab's explicit combinational reference construction. Synthesis may
-rewrite the cones and requires a separate synthesized-netlist extension.
+applicability result, not evidence that SFLL is secure. The implementation
+supports LockLab's explicit construction and functionally equivalent netlists
+where pairwise comparison and strip cones survive synthesis. A synthesized
+netlist that completely absorbs those cones cannot be identified from the
+locked netlist alone and is reported without a candidate.
 
 Current whole-circuit ABC results are:
 
