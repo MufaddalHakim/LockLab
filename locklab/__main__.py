@@ -21,6 +21,7 @@ from locklab.locking import (
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sfll_hd,
     lock_sfll_hd0,
 )
 from locklab.sat_attack import appsat_attack, sat_attack
@@ -58,11 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
     lock_parser.add_argument("--top", help="Top module for Verilog input")
     lock_parser.add_argument(
         "--scheme",
-        choices=("rll", "mux", "antisat", "rll-antisat", "sfll-hd0"),
+        choices=(
+            "rll",
+            "mux",
+            "antisat",
+            "rll-antisat",
+            "sfll-hd0",
+            "sfll-hd",
+        ),
         default="rll",
         help="Logic-locking scheme (default: rll)",
     )
     lock_parser.add_argument("--key-size", type=int, required=True)
+    lock_parser.add_argument(
+        "--hamming-distance",
+        type=int,
+        help="Protected Hamming distance for --scheme sfll-hd",
+    )
     lock_parser.add_argument("--seed", type=int, default=0)
 
     attack_parser = subparsers.add_parser("attack", help="Attack a locked circuit")
@@ -203,6 +216,15 @@ def _run_lock(args: argparse.Namespace) -> None:
     output = _default_lock_output(args.circuit)
     metadata = output.with_suffix(".lock.json")
 
+    if args.scheme == "sfll-hd" and args.hamming_distance is None:
+        raise CircuitError(
+            "--hamming-distance is required with --scheme sfll-hd"
+        )
+    if args.scheme != "sfll-hd" and args.hamming_distance is not None:
+        raise CircuitError(
+            "--hamming-distance is only valid with --scheme sfll-hd"
+        )
+
     source = load_circuit(args.circuit, top=args.top)
     if args.scheme == "rll":
         lock_result = lock_rll(source, key_size=args.key_size, seed=args.seed)
@@ -220,6 +242,13 @@ def _run_lock(args: argparse.Namespace) -> None:
         lock_result = lock_sfll_hd0(
             source,
             key_size=args.key_size,
+            seed=args.seed,
+        )
+    elif args.scheme == "sfll-hd":
+        lock_result = lock_sfll_hd(
+            source,
+            key_size=args.key_size,
+            hamming_distance=args.hamming_distance,
             seed=args.seed,
         )
     else:
@@ -244,6 +273,9 @@ def _run_lock(args: argparse.Namespace) -> None:
     print(f"Locked circuit: {output}")
     print(f"Scheme: {args.scheme}")
     print(f"Correct key: {lock_result.key_string}")
+    if lock_result.hamming_distance is not None:
+        print(f"Hamming distance: {lock_result.hamming_distance}")
+        print(f"Protected cubes: {lock_result.protected_cube_count}")
     print(f"Metadata: {metadata}")
     print(
         f"Validation: PASS ({validation.method}, "
@@ -648,6 +680,7 @@ def _write_lock_metadata(
                 "correct_bit": insertion.correct_bit,
                 "gate": insertion.gate_kind,
                 "protected_signal": insertion.protected_signal,
+                "source_signal": insertion.source_signal,
                 **(
                     {"decoy_signal": insertion.decoy_signal}
                     if insertion.decoy_signal is not None
@@ -672,6 +705,16 @@ def _write_lock_metadata(
             insertion["component"] = (
                 "rll" if insertion["key_index"] < component_size else "antisat"
             )
+    if lock_result.hamming_distance is not None:
+        payload["sfll"] = {
+            "key_size": len(lock_result.key),
+            "hamming_distance": lock_result.hamming_distance,
+            "protected_cube_count": lock_result.protected_cube_count,
+            "selected_inputs": [
+                insertion.source_signal
+                for insertion in lock_result.insertions
+            ],
+        }
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

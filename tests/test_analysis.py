@@ -19,6 +19,7 @@ from locklab.locking import (
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sfll_hd,
     lock_sfll_hd0,
 )
 from locklab.process import run_process
@@ -411,6 +412,23 @@ def test_sfll_functional_assessment_labels_exact_topology() -> None:
     assert len(assessments) == 1
     assert assessments[0].match_type == "exact topology"
     assert assessments[0].inferred_key == locked.key
+
+
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for functional SFLL negative controls",
+)
+def test_hd0_analyzers_do_not_misclassify_general_sfll_hd() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd(
+        original,
+        key_size=3,
+        hamming_distance=1,
+        seed=1,
+    )
+
+    assert find_sfll_hd0_candidates(locked.circuit) == ()
+    assert assess_sfll_hd0(locked.circuit) == ()
 
 
 @pytest.mark.parametrize(

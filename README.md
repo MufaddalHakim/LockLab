@@ -5,9 +5,10 @@ locking. It reads Verilog or BENCH circuits, shows circuit information, inserts
 logic-locking gates, and validates candidate keys.
 
 The current version implements Random Logic Locking (RLL), MUX-based locking,
-type-0 Anti-SAT and SFLL-HD0 defenses, exact and approximate oracle-guided SAT
-attacks, structural Anti-SAT and SFLL-HD0 analysis, and signal-probability
-Anti-SAT analysis. All commands use the same circuit model and parsers.
+type-0 Anti-SAT, SFLL-HD0, and general SFLL-HDh defenses; exact and approximate
+oracle-guided SAT attacks; structural and functional SFLL-HD0 analysis; and
+structural and signal-probability Anti-SAT analysis. All commands use the same
+circuit model and parsers.
 
 ## Setup
 
@@ -144,6 +145,48 @@ the stripped function into the original logic cone, so the protection logic
 retains a clear structural boundary. The construction and its one-protected-cube
 behavior follow the original
 [SFLL paper](https://acmccs.github.io/papers/p1601-yasinA.pdf).
+
+General SFLL-HDh protects every selected-input cube at exactly distance `h`
+from the planted key:
+
+```bash
+locklab lock benchmarks/sources/iscas85/c432.bench \
+  --scheme sfll-hd \
+  --key-size 16 \
+  --hamming-distance 2 \
+  --seed 42
+```
+
+The distance must satisfy `0 <= h <= key-size`. LockLab forms one mismatch bit
+per selected input, computes whether the mismatch weight is exactly `h`, and
+uses the result for both the hardcoded strip function and runtime-key restore
+function. The exact-weight network uses a one-hot dynamic program with
+`O(key-size * h)` gates rather than explicitly enumerating protected cubes.
+With the planted key, strip and restore are identical and formally cancel.
+
+For key size `k`, the protected set contains exactly `C(k,h)` selected-input
+cubes, representing `C(k,h) * 2^(n-k)` complete vectors when the original
+circuit has `n` inputs. The adjacent metadata records `k`, `h`, selected inputs,
+and this cube count. `--scheme sfll-hd --hamming-distance 0` uses the existing
+HD0 construction; the `sfll-hd0` scheme remains available for compatibility.
+
+An important interpretation caveat is that a wrong key need not always produce
+a different exact-distance set. When `k` is even and `h = k/2`, a key and its
+bitwise complement define the same protected set and are therefore functionally
+equivalent. Validation reports such a key as an equivalent alternative rather
+than incorrectly treating every non-planted key as a failure.
+
+The current formal benchmark check uses 16-bit keys at `h=2` on the larger
+circuits:
+
+| Benchmark | Original gates | Locked gates | Added gates | Protected cubes | Formal result |
+|---|---:|---:|---:|---:|---|
+| c432 | 232 | 544 | 312 | 120 | equivalent |
+| c880 | 383 | 695 | 312 | 120 | equivalent |
+| c1908 | 880 | 1192 | 312 | 120 | equivalent |
+
+These counts describe the explicit unsynthesized reference construction and
+are deterministic for the shown `key-size=16`, `h=2`, and `seed=42` setup.
 
 BENCH input and output use the same command:
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from math import comb
 
 from locklab.circuit import Circuit, CircuitError, Gate
 
@@ -23,6 +24,10 @@ class LockResult:
     key: tuple[int, ...]
     seed: int
     insertions: tuple[LockInsertion, ...]
+    hamming_distance: int | None = None
+    protected_cube_count: int | None = None
+    strip_match_signal: str | None = None
+    restore_match_signal: str | None = None
 
     @property
     def key_string(self) -> str:
@@ -405,7 +410,267 @@ def lock_sfll_hd0(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
         key=key,
         seed=seed,
         insertions=tuple(insertions),
+        hamming_distance=0,
+        protected_cube_count=1,
+        strip_match_signal=strip_match,
+        restore_match_signal=restore_match,
     )
+
+
+def lock_sfll_hd(
+    circuit: Circuit,
+    *,
+    key_size: int,
+    hamming_distance: int,
+    seed: int,
+) -> LockResult:
+    """Insert SFLL-HD with exact-distance strip and restore functions."""
+
+    circuit.validate()
+    if key_size <= 0:
+        raise CircuitError("SFLL-HD key size must be greater than zero")
+    if key_size > len(circuit.inputs):
+        raise CircuitError(
+            f"SFLL-HD key size {key_size} exceeds "
+            f"{len(circuit.inputs)} primary inputs"
+        )
+    if hamming_distance < 0 or hamming_distance > key_size:
+        raise CircuitError(
+            "SFLL-HD Hamming distance must be between zero and the key size"
+        )
+    if hamming_distance == 0:
+        return lock_sfll_hd0(circuit, key_size=key_size, seed=seed)
+
+    driven_outputs = tuple(
+        output
+        for output in circuit.outputs
+        if any(gate.output == output for gate in circuit.gates)
+    )
+    if not driven_outputs:
+        raise CircuitError("SFLL-HD requires a gate-driven primary output")
+
+    random_source = random.Random(seed)
+    selected_inputs = tuple(random_source.sample(circuit.inputs, key_size))
+    protected_output = random_source.choice(driven_outputs)
+    key = tuple(random_source.randint(0, 1) for _ in range(key_size))
+
+    used_signals = set(circuit.inputs) | set(circuit.outputs)
+    used_signals.update(gate.output for gate in circuit.gates)
+    used_gate_names = {gate.name for gate in circuit.gates}
+    key_inputs = tuple(
+        _unique_name(f"keyinput_{index}", used_signals)
+        for index in range(key_size)
+    )
+    protected_source = _unique_name(
+        f"{protected_output}_locksrc_sfll_hd{hamming_distance}",
+        used_signals,
+    )
+    locked_gates = [
+        Gate(
+            name=gate.name,
+            kind=gate.kind,
+            inputs=gate.inputs,
+            output=(
+                protected_source
+                if gate.output == protected_output
+                else gate.output
+            ),
+        )
+        for gate in circuit.gates
+    ]
+
+    strip_mismatches: list[str] = []
+    restore_mismatches: list[str] = []
+    insertions: list[LockInsertion] = []
+    for index, (data_input, correct_bit, key_input) in enumerate(
+        zip(selected_inputs, key, key_inputs)
+    ):
+        strip_mismatch = _unique_name(
+            f"sfll_hd_strip_mismatch_{index}",
+            used_signals,
+        )
+        restore_mismatch = _unique_name(
+            f"sfll_hd_restore_mismatch_{index}",
+            used_signals,
+        )
+        locked_gates.extend(
+            (
+                Gate(
+                    name=_unique_name(
+                        f"sfll_hd_strip_mismatch_gate_{index}",
+                        used_gate_names,
+                    ),
+                    kind="NOT" if correct_bit else "BUF",
+                    inputs=(data_input,),
+                    output=strip_mismatch,
+                ),
+                Gate(
+                    name=_unique_name(
+                        f"sfll_hd_restore_mismatch_gate_{index}",
+                        used_gate_names,
+                    ),
+                    kind="XOR",
+                    inputs=(data_input, key_input),
+                    output=restore_mismatch,
+                ),
+            )
+        )
+        strip_mismatches.append(strip_mismatch)
+        restore_mismatches.append(restore_mismatch)
+        insertions.append(
+            LockInsertion(
+                key_index=index,
+                key_input=key_input,
+                correct_bit=correct_bit,
+                gate_kind="XOR",
+                protected_signal=protected_output,
+                source_signal=data_input,
+            )
+        )
+
+    strip_match = _add_exact_hamming_match(
+        locked_gates,
+        tuple(strip_mismatches),
+        hamming_distance=hamming_distance,
+        prefix="sfll_hd_strip",
+        used_signals=used_signals,
+        used_gate_names=used_gate_names,
+    )
+    restore_match = _add_exact_hamming_match(
+        locked_gates,
+        tuple(restore_mismatches),
+        hamming_distance=hamming_distance,
+        prefix="sfll_hd_restore",
+        used_signals=used_signals,
+        used_gate_names=used_gate_names,
+    )
+    stripped_output = _unique_name(
+        f"{protected_output}_sfll_hd{hamming_distance}_stripped",
+        used_signals,
+    )
+    locked_gates.extend(
+        (
+            Gate(
+                name=_unique_name("sfll_hd_strip_output_gate", used_gate_names),
+                kind="XOR",
+                inputs=(protected_source, strip_match),
+                output=stripped_output,
+            ),
+            Gate(
+                name=_unique_name("sfll_hd_restore_output_gate", used_gate_names),
+                kind="XOR",
+                inputs=(stripped_output, restore_match),
+                output=protected_output,
+            ),
+        )
+    )
+
+    locked = Circuit(
+        name=f"{circuit.name}_sfll_hd{hamming_distance}",
+        inputs=(*circuit.inputs, *key_inputs),
+        outputs=circuit.outputs,
+        gates=tuple(locked_gates),
+    )
+    locked.validate()
+    return LockResult(
+        circuit=locked,
+        key=key,
+        seed=seed,
+        insertions=tuple(insertions),
+        hamming_distance=hamming_distance,
+        protected_cube_count=comb(key_size, hamming_distance),
+        strip_match_signal=strip_match,
+        restore_match_signal=restore_match,
+    )
+
+
+def _add_exact_hamming_match(
+    gates: list[Gate],
+    mismatch_signals: tuple[str, ...],
+    *,
+    hamming_distance: int,
+    prefix: str,
+    used_signals: set[str],
+    used_gate_names: set[str],
+) -> str:
+    """Build a one-hot dynamic program whose output means weight == h."""
+
+    states: tuple[str, ...] = ("1",)
+    for position, mismatch in enumerate(mismatch_signals):
+        inverted_mismatch = _unique_name(
+            f"{prefix}_not_mismatch_{position}",
+            used_signals,
+        )
+        gates.append(
+            Gate(
+                name=_unique_name(
+                    f"{prefix}_not_mismatch_gate_{position}",
+                    used_gate_names,
+                ),
+                kind="NOT",
+                inputs=(mismatch,),
+                output=inverted_mismatch,
+            )
+        )
+
+        new_states: list[str] = []
+        maximum_weight = min(position + 1, hamming_distance)
+        for weight in range(maximum_weight + 1):
+            terms: list[str] = []
+            if weight < len(states):
+                unchanged = _unique_name(
+                    f"{prefix}_state_{position + 1}_{weight}_same",
+                    used_signals,
+                )
+                gates.append(
+                    Gate(
+                        name=_unique_name(
+                            f"{prefix}_state_{position + 1}_{weight}_same_gate",
+                            used_gate_names,
+                        ),
+                        kind="AND",
+                        inputs=(states[weight], inverted_mismatch),
+                        output=unchanged,
+                    )
+                )
+                terms.append(unchanged)
+            if weight > 0 and weight - 1 < len(states):
+                incremented = _unique_name(
+                    f"{prefix}_state_{position + 1}_{weight}_incremented",
+                    used_signals,
+                )
+                gates.append(
+                    Gate(
+                        name=_unique_name(
+                            f"{prefix}_state_{position + 1}_{weight}_incremented_gate",
+                            used_gate_names,
+                        ),
+                        kind="AND",
+                        inputs=(states[weight - 1], mismatch),
+                        output=incremented,
+                    )
+                )
+                terms.append(incremented)
+
+            state = _unique_name(
+                f"{prefix}_state_{position + 1}_{weight}",
+                used_signals,
+            )
+            gates.append(
+                Gate(
+                    name=_unique_name(
+                        f"{prefix}_state_{position + 1}_{weight}_gate",
+                        used_gate_names,
+                    ),
+                    kind="BUF" if len(terms) == 1 else "OR",
+                    inputs=tuple(terms),
+                    output=state,
+                )
+            )
+            new_states.append(state)
+        states = tuple(new_states)
+
+    return states[hamming_distance]
 
 
 def _add_antisat_block(

@@ -1,17 +1,20 @@
+import shutil
+from math import comb
 from pathlib import Path
 
 import pytest
 
 from locklab.bench import load_bench, write_bench
-from locklab.circuit import CircuitError
+from locklab.circuit import Circuit, CircuitError
 from locklab.locking import (
     lock_antisat,
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sfll_hd,
     lock_sfll_hd0,
 )
-from locklab.validation import validate_key
+from locklab.validation import prove_key_equivalence, validate_key
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -290,3 +293,194 @@ def test_sfll_hd0_rejects_invalid_key_size(key_size: int) -> None:
 
     with pytest.raises(CircuitError, match="SFLL-HD0 key size"):
         lock_sfll_hd0(original, key_size=key_size, seed=0)
+
+
+def test_sfll_hd_is_deterministic_and_records_distance() -> None:
+    original = load_bench(C17_BENCH)
+
+    first = lock_sfll_hd(
+        original,
+        key_size=4,
+        hamming_distance=2,
+        seed=42,
+    )
+    second = lock_sfll_hd(
+        original,
+        key_size=4,
+        hamming_distance=2,
+        seed=42,
+    )
+
+    assert first == second
+    assert first.hamming_distance == 2
+    assert first.protected_cube_count == comb(4, 2)
+    assert first.strip_match_signal is not None
+    assert first.restore_match_signal is not None
+    assert len(first.circuit.inputs) == len(original.inputs) + 4
+
+
+@pytest.mark.parametrize(
+    ("key_size", "hamming_distance"),
+    ((1, 1), (3, 1), (3, 2), (3, 3), (5, 2)),
+)
+def test_sfll_hd_correct_key_passes_and_strip_has_binomial_cubes(
+    key_size: int,
+    hamming_distance: int,
+) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd(
+        original,
+        key_size=key_size,
+        hamming_distance=hamming_distance,
+        seed=1,
+    )
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+
+    correct = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=locked.key,
+    )
+
+    assert correct.passed
+    assert locked.protected_cube_count == comb(key_size, hamming_distance)
+    assert locked.strip_match_signal is not None
+    strip_circuit = Circuit(
+        name="sfll_strip_probe",
+        inputs=locked.circuit.inputs,
+        outputs=(locked.strip_match_signal,),
+        gates=locked.circuit.gates,
+    )
+    active_vectors = 0
+    for vector in range(1 << len(original.inputs)):
+        bits = f"{vector:0{len(original.inputs)}b}"
+        values = dict(zip(original.inputs, map(int, bits)))
+        values.update(dict.fromkeys(key_inputs, 0))
+        active_vectors += strip_circuit.evaluate(values)[
+            locked.strip_match_signal
+        ]
+    expected_vectors = comb(key_size, hamming_distance) * (
+        1 << (len(original.inputs) - key_size)
+    )
+    assert active_vectors == expected_vectors
+
+
+def test_sfll_hd_representative_wrong_key_changes_function() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd(
+        original,
+        key_size=3,
+        hamming_distance=1,
+        seed=1,
+    )
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+    wrong_key = (1 - locked.key[0], *locked.key[1:])
+
+    wrong = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=wrong_key,
+    )
+
+    assert not wrong.passed
+
+
+def test_sfll_hd_half_distance_has_complementary_equivalent_key() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd(
+        original,
+        key_size=4,
+        hamming_distance=2,
+        seed=1,
+    )
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+    complement_key = tuple(1 - bit for bit in locked.key)
+
+    equivalent = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=complement_key,
+    )
+
+    assert complement_key != locked.key
+    assert equivalent.passed
+
+
+def test_sfll_hd_zero_is_the_existing_hd0_construction() -> None:
+    original = load_bench(C17_BENCH)
+
+    general = lock_sfll_hd(
+        original,
+        key_size=3,
+        hamming_distance=0,
+        seed=42,
+    )
+    specialized = lock_sfll_hd0(original, key_size=3, seed=42)
+
+    assert general == specialized
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "key_size", "hamming_distance"),
+    (
+        ("c17", 4, 1),
+        ("c432", 16, 2),
+        ("c880", 16, 2),
+        ("c1908", 16, 2),
+    ),
+)
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for formal SFLL-HD validation",
+)
+def test_sfll_hd_formally_validates_benchmarks(
+    benchmark: str,
+    key_size: int,
+    hamming_distance: int,
+) -> None:
+    original = load_bench(
+        REPOSITORY_ROOT / f"benchmarks/sources/iscas85/{benchmark}.bench"
+    )
+    locked = lock_sfll_hd(
+        original,
+        key_size=key_size,
+        hamming_distance=hamming_distance,
+        seed=42,
+    )
+
+    result = prove_key_equivalence(
+        original,
+        locked.circuit,
+        key_inputs=tuple(item.key_input for item in locked.insertions),
+        key=locked.key,
+    )
+
+    assert result.passed
+
+
+@pytest.mark.parametrize(
+    ("key_size", "hamming_distance", "message"),
+    (
+        (0, 0, "key size"),
+        (6, 1, "key size"),
+        (3, -1, "Hamming distance"),
+        (3, 4, "Hamming distance"),
+    ),
+)
+def test_sfll_hd_rejects_invalid_parameters(
+    key_size: int,
+    hamming_distance: int,
+    message: str,
+) -> None:
+    original = load_bench(C17_BENCH)
+
+    with pytest.raises(CircuitError, match=message):
+        lock_sfll_hd(
+            original,
+            key_size=key_size,
+            hamming_distance=hamming_distance,
+            seed=0,
+        )

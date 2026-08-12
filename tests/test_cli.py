@@ -15,7 +15,7 @@ C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
 
 @pytest.mark.parametrize(
     "scheme",
-    ("rll", "mux", "antisat", "rll-antisat", "sfll-hd0"),
+    ("rll", "mux", "antisat", "rll-antisat", "sfll-hd0", "sfll-hd"),
 )
 def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
     locked_path = tmp_path / "outputs/c17_locked.bench"
@@ -31,7 +31,7 @@ def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
         "8" if scheme == "rll-antisat" else "4" if scheme == "antisat" else "2",
         "--seed",
         "42",
-    )
+    ) + (("--hamming-distance", "1") if scheme == "sfll-hd" else ())
 
     locked = subprocess.run(
         lock_command,
@@ -56,6 +56,16 @@ def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
         assert {item["component"] for item in metadata["insertions"]} == {
             "rll",
             "antisat",
+        }
+    if scheme == "sfll-hd":
+        assert metadata["sfll"] == {
+            "key_size": 2,
+            "hamming_distance": 1,
+            "protected_cube_count": 2,
+            "selected_inputs": [
+                item["source_signal"]
+                for item in metadata["insertions"]
+            ],
         }
 
     if shutil.which("yices-sat") is not None:
@@ -111,6 +121,105 @@ def test_attack_classification_reports_exact_key(tmp_path: Path) -> None:
     result = _attack_key_classification(locked_path, (1, 0, 1))
 
     assert result == ("Classification: exact planted key",)
+
+
+@pytest.mark.parametrize(
+    ("extra_arguments", "message"),
+    (
+        (
+            ("--scheme", "sfll-hd", "--key-size", "3"),
+            "--hamming-distance is required",
+        ),
+        (
+            (
+                "--scheme",
+                "rll",
+                "--key-size",
+                "2",
+                "--hamming-distance",
+                "1",
+            ),
+            "--hamming-distance is only valid",
+        ),
+        (
+            (
+                "--scheme",
+                "sfll-hd",
+                "--key-size",
+                "3",
+                "--hamming-distance",
+                "4",
+            ),
+            "Hamming distance must be between zero and the key size",
+        ),
+    ),
+)
+def test_cli_rejects_invalid_sfll_hd_options(
+    tmp_path: Path,
+    extra_arguments: tuple[str, ...],
+    message: str,
+) -> None:
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "lock",
+            str(C17_BENCH),
+            *extra_arguments,
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert message in result.stderr
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_cli_sfll_hd_reproduces_identical_outputs(tmp_path: Path) -> None:
+    command = (
+        sys.executable,
+        "-m",
+        "locklab",
+        "lock",
+        str(C17_BENCH),
+        "--scheme",
+        "sfll-hd",
+        "--key-size",
+        "4",
+        "--hamming-distance",
+        "2",
+        "--seed",
+        "42",
+    )
+
+    first = subprocess.run(
+        command,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    circuit_path = tmp_path / "outputs/c17_locked.bench"
+    metadata_path = circuit_path.with_suffix(".lock.json")
+    first_circuit = circuit_path.read_bytes()
+    first_metadata = metadata_path.read_bytes()
+
+    second = subprocess.run(
+        command,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert circuit_path.read_bytes() == first_circuit
+    assert metadata_path.read_bytes() == first_metadata
 
 
 def test_attack_classification_reports_changed_insertions(tmp_path: Path) -> None:
