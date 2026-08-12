@@ -14,8 +14,16 @@ from locklab.analysis import (
 from locklab.bench import load_bench, write_bench
 from locklab.circuit import Circuit, CircuitError, Gate
 from locklab.formats import load_circuit
-from locklab.locking import lock_antisat, lock_rll_antisat, lock_sfll_hd0
+from locklab.locking import (
+    lock_antisat,
+    lock_mux,
+    lock_rll,
+    lock_rll_antisat,
+    lock_sfll_hd0,
+)
+from locklab.process import run_process
 from locklab.sat_attack import sat_attack
+from locklab.sfll_analysis import assess_sfll_hd0
 from locklab.validation import prove_key_equivalence, validate_key
 from locklab.verilog import write_verilog
 
@@ -50,6 +58,31 @@ def _rename_internal_signals(circuit: Circuit) -> Circuit:
     )
     renamed.validate()
     return renamed
+
+
+def _synthesize_with_abc(
+    circuit: Circuit,
+    tmp_path: Path,
+    *,
+    gate_library: str,
+) -> Circuit:
+    source = tmp_path / "pre_synthesis.v"
+    output = tmp_path / "synthesized.v"
+    write_verilog(circuit, source)
+    script = (
+        f"read_verilog {source}; "
+        f"hierarchy -top {circuit.name}; "
+        "proc; flatten; opt; techmap; opt; "
+        f"abc -g {gate_library}; "
+        f"opt; clean; write_verilog -noattr {output}"
+    )
+    result = run_process(
+        ("yosys", "-Q", "-p", script),
+        cwd=tmp_path,
+        timeout_seconds=30.0,
+    )
+    assert result.succeeded, result.stderr
+    return load_circuit(output)
 
 
 def test_signal_probability_scores_cover_supported_gate_types() -> None:
@@ -321,6 +354,19 @@ def test_unlocked_benchmarks_have_no_sfll_hd0_candidate(benchmark: str) -> None:
     assert find_sfll_hd0_candidates(original) == ()
 
 
+@pytest.mark.parametrize("benchmark", ("c17", "c432", "c880", "c1908"))
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for functional negative controls",
+)
+def test_unlocked_benchmarks_have_no_functional_sfll_candidate(
+    benchmark: str,
+) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+
+    assert assess_sfll_hd0(original) == ()
+
+
 def test_cli_reports_sfll_cube_without_metadata_or_files(tmp_path: Path) -> None:
     original = load_bench(C17_BENCH)
     locked = lock_sfll_hd0(original, key_size=4, seed=1)
@@ -353,6 +399,218 @@ def test_cli_reports_sfll_cube_without_metadata_or_files(tmp_path: Path) -> None
         )
         assert expected in result.stdout
     assert not locked_path.with_suffix(".lock.json").exists()
+    assert set(tmp_path.rglob("*")) == files_before
+
+
+def test_sfll_functional_assessment_labels_exact_topology() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=4, seed=1)
+
+    assessments = assess_sfll_hd0(locked.circuit)
+
+    assert len(assessments) == 1
+    assert assessments[0].match_type == "exact topology"
+    assert assessments[0].inferred_key == locked.key
+
+
+@pytest.mark.parametrize(
+    "gate_library",
+    (
+        "AND,NAND,OR,NOR,XOR,XNOR",
+        "AND,NAND",
+        "AND,OR,NAND,NOR",
+    ),
+)
+@pytest.mark.skipif(
+    shutil.which("yosys") is None or shutil.which("yices-sat") is None,
+    reason="Yosys and Yices are required for synthesized functional analysis",
+)
+def test_sfll_functional_assessment_handles_multiple_synthesis_mappings(
+    gate_library: str,
+    tmp_path: Path,
+) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=4, seed=1)
+    synthesized = _synthesize_with_abc(
+        locked.circuit,
+        tmp_path,
+        gate_library=gate_library,
+    )
+
+    assert find_sfll_hd0_candidates(synthesized) == ()
+    assessments = assess_sfll_hd0(synthesized)
+
+    assert len(assessments) == 1
+    assessment = assessments[0]
+    assert assessment.match_type == "functional candidate"
+    assert assessment.inferred_key == locked.key
+    assert set(assessment.strip_unateness) == {"positive", "negative"}
+    expected_mappings = {
+        insertion.key_input: insertion.source_signal
+        for insertion in locked.insertions
+    }
+    assert dict(zip(assessment.key_inputs, assessment.protected_inputs)) == (
+        expected_mappings
+    )
+    proof = prove_key_equivalence(
+        original,
+        synthesized,
+        key_inputs=assessment.key_inputs,
+        key=assessment.inferred_key,
+    )
+    assert proof.passed
+
+
+@pytest.mark.parametrize("benchmark", ("c432", "c880", "c1908"))
+@pytest.mark.skipif(
+    shutil.which("yosys") is None or shutil.which("yices-sat") is None,
+    reason="Yosys and Yices are required for synthesized functional analysis",
+)
+def test_sfll_functional_assessment_benchmark_matrix(
+    benchmark: str,
+    tmp_path: Path,
+) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+    locked = lock_sfll_hd0(original, key_size=4, seed=1)
+    synthesized = _synthesize_with_abc(
+        locked.circuit,
+        tmp_path,
+        gate_library="AND,NAND",
+    )
+
+    assessments = assess_sfll_hd0(synthesized)
+
+    assert len(assessments) == 1
+    assessment = assessments[0]
+    assert assessment.match_type == "functional candidate"
+    assert assessment.inferred_key == locked.key
+    proof = prove_key_equivalence(
+        original,
+        synthesized,
+        key_inputs=assessment.key_inputs,
+        key=assessment.inferred_key,
+    )
+    assert proof.passed
+
+
+@pytest.mark.parametrize("benchmark", ("c432", "c880"))
+@pytest.mark.skipif(
+    shutil.which("yosys") is None or shutil.which("yices-sat") is None,
+    reason="Yosys and Yices are required for synthesized functional analysis",
+)
+def test_sfll_functional_assessment_recovers_sixteen_bit_cube(
+    benchmark: str,
+    tmp_path: Path,
+) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+    locked = lock_sfll_hd0(original, key_size=16, seed=42)
+    synthesized = _synthesize_with_abc(
+        locked.circuit,
+        tmp_path,
+        gate_library="AND,NAND",
+    )
+
+    assessments = assess_sfll_hd0(synthesized)
+
+    assert len(assessments) == 1
+    assessment = assessments[0]
+    assert assessment.inferred_key == locked.key
+    proof = prove_key_equivalence(
+        original,
+        synthesized,
+        key_inputs=assessment.key_inputs,
+        key=assessment.inferred_key,
+    )
+    assert proof.passed
+
+
+@pytest.mark.skipif(
+    shutil.which("yosys") is None or shutil.which("yices-sat") is None,
+    reason="Yosys and Yices are required for synthesized functional analysis",
+)
+def test_functional_assessment_does_not_claim_absorbed_strip_cube(
+    tmp_path: Path,
+) -> None:
+    original = load_bench(BENCHMARK_ROOT / "c1908.bench")
+    locked = lock_sfll_hd0(original, key_size=16, seed=42)
+    synthesized = _synthesize_with_abc(
+        locked.circuit,
+        tmp_path,
+        gate_library="AND,NAND",
+    )
+
+    assert find_sfll_hd0_candidates(synthesized) == ()
+    assert assess_sfll_hd0(synthesized) == ()
+
+
+@pytest.mark.parametrize(
+    "locked_circuit",
+    (
+        pytest.param("rll", id="rll"),
+        pytest.param("mux", id="mux"),
+        pytest.param("antisat", id="antisat"),
+        pytest.param("rll-antisat", id="rll-antisat"),
+    ),
+)
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for functional negative controls",
+)
+def test_other_locking_schemes_are_functional_negative_controls(
+    locked_circuit: str,
+) -> None:
+    original = load_bench(C17_BENCH)
+    if locked_circuit == "rll":
+        candidate = lock_rll(original, key_size=4, seed=1).circuit
+    elif locked_circuit == "mux":
+        candidate = lock_mux(original, key_size=4, seed=1).circuit
+    elif locked_circuit == "antisat":
+        candidate = lock_antisat(original, key_size=8, seed=1).circuit
+    else:
+        candidate = lock_rll_antisat(original, key_size=8, seed=1).circuit
+
+    assert assess_sfll_hd0(candidate) == ()
+
+
+@pytest.mark.skipif(
+    shutil.which("yosys") is None or shutil.which("yices-sat") is None,
+    reason="Yosys and Yices are required for synthesized functional analysis",
+)
+def test_cli_reports_synthesized_sfll_function_without_files(
+    tmp_path: Path,
+) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sfll_hd0(original, key_size=4, seed=1)
+    synthesized = _synthesize_with_abc(
+        locked.circuit,
+        tmp_path,
+        gate_library="AND,NAND",
+    )
+    synthesized_path = tmp_path / "synthesized.bench"
+    write_bench(synthesized, synthesized_path)
+    files_before = set(tmp_path.rglob("*"))
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "attack",
+            "sfll-functional",
+            str(synthesized_path),
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SFLL-HD0 assessment candidates: 1" in result.stdout
+    assert "Exact topology matches: 0" in result.stdout
+    assert "Functional candidates: 1" in result.stdout
+    assert "Match type: functional candidate" in result.stdout
+    assert f"Inferred protected cube: {locked.key_string}" in result.stdout
     assert set(tmp_path.rglob("*")) == files_before
 
 

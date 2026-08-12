@@ -24,6 +24,7 @@ from locklab.locking import (
     lock_sfll_hd0,
 )
 from locklab.sat_attack import appsat_attack, sat_attack
+from locklab.sfll_analysis import assess_sfll_hd0
 from locklab.validation import ValidationResult, prove_key_equivalence, validate_key
 
 
@@ -99,6 +100,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--top",
         help="Top module for Verilog input",
     )
+    sfll_functional_parser = attack_subparsers.add_parser(
+        "sfll-functional",
+        help="Assess exact and synthesized SFLL-HD0 candidates",
+    )
+    sfll_functional_parser.add_argument("locked", type=Path)
+    sfll_functional_parser.add_argument(
+        "--top",
+        help="Top module for Verilog input",
+    )
+    sfll_functional_parser.add_argument(
+        "--max-key-size",
+        type=int,
+        default=32,
+        help="Largest functional restore cone to assess (default: 32)",
+    )
     removal_parser = attack_subparsers.add_parser(
         "antisat-remove",
         help="Bypass a structurally recognized type-0 Anti-SAT block",
@@ -149,6 +165,13 @@ def main() -> None:
             return
         if args.command == "attack" and args.attack_kind == "sfll-structural":
             _run_sfll_structural_attack(args.locked, top=args.top)
+            return
+        if args.command == "attack" and args.attack_kind == "sfll-functional":
+            _run_sfll_functional_attack(
+                args.locked,
+                top=args.top,
+                max_key_size=args.max_key_size,
+            )
             return
         if args.command == "attack" and args.attack_kind == "antisat-remove":
             _run_antisat_removal_attack(args.locked, top=args.top)
@@ -340,6 +363,49 @@ def _run_sfll_structural_attack(path: Path, *, top: str | None) -> None:
             print(
                 f"    {mapping.key_input} -> {mapping.protected_input} "
                 f"(cube bit {mapping.protected_bit})"
+            )
+
+
+def _run_sfll_functional_attack(
+    path: Path,
+    *,
+    top: str | None,
+    max_key_size: int,
+) -> None:
+    circuit = load_circuit(path, top=top)
+    assessments = assess_sfll_hd0(circuit, max_key_size=max_key_size)
+    exact_count = sum(
+        assessment.match_type == "exact topology"
+        for assessment in assessments
+    )
+    functional_count = len(assessments) - exact_count
+    print(f"SFLL-HD0 assessment candidates: {len(assessments)}")
+    print(f"Exact topology matches: {exact_count}")
+    print(f"Functional candidates: {functional_count}")
+    if not assessments:
+        print("No exact or formally supported functional SFLL-HD0 candidate found")
+        return
+
+    for index, assessment in enumerate(assessments, start=1):
+        print(f"Candidate {index}:")
+        print(f"  Match type: {assessment.match_type}")
+        print(f"  Protected output: {assessment.protected_output}")
+        print(f"  Strip matcher: {assessment.strip_match_signal}")
+        print(f"  Strip active value: {assessment.strip_active_value}")
+        print(f"  Runtime comparator: {assessment.restore_match_signal}")
+        print(f"  Restore active value: {assessment.restore_active_value}")
+        print(f"  Suspected key size: {assessment.key_size}")
+        print(f"  Protected inputs: {', '.join(assessment.protected_inputs)}")
+        print(f"  Inferred protected cube: {assessment.inferred_cube}")
+        print(f"  Suspected key inputs: {', '.join(assessment.key_inputs)}")
+        print("  Key-to-input mapping:")
+        for mapping, unateness in zip(
+            assessment.mappings,
+            assessment.strip_unateness,
+        ):
+            print(
+                f"    {mapping.key_input} -> {mapping.protected_input} "
+                f"(cube bit {mapping.protected_bit}, {unateness} unate)"
             )
 
 

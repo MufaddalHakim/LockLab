@@ -255,6 +255,46 @@ implementation. General synthesized or security-aware SFLL netlists may merge
 or rewrite these cones and require functional candidate analysis; zero exact
 matches is therefore not evidence that SFLL protection is absent.
 
+For synthesized netlists, the functional assessment follows key-input fanout
+instead of requiring XNOR and XOR gate shapes:
+
+```bash
+locklab attack sfll-functional synthesized/c432_locked.v
+```
+
+The assessment computes fan-in supports and post-dominators to locate restore
+cones that exclusively collect suspected key inputs. It recovers key-to-data
+pairings from two-input support sets, checks that the restore cone is an equality
+function, and uses unateness to identify a matching or complemented strip point
+function. SAT proofs reject candidates unless both Boolean properties hold. The
+report labels unchanged circuits as `exact topology` and rewritten circuits as
+`functional candidate`; it remains read-only and creates no files. Functional
+proofs require Yices, and `--max-key-size` limits the largest restore cone
+considered (32 by default).
+
+The functional mode deliberately reports no complete candidate if synthesis
+fully absorbs the strip point function into the original logic cone. The restore
+cone may still be recognizable, but the planted cube is not generally
+identifiable without a surviving strip function, an oracle, or an unlocked
+reference. Functional synthesized one-bit candidates are also excluded because
+ordinary two-input circuit logic produces too many ambiguous matches; the exact
+mode continues to support one-bit SFLL-HD0.
+
+Current whole-circuit ABC results are:
+
+| Benchmark | Key size | ABC library | Assessment | Formal inferred-key result |
+|---|---:|---|---|---|
+| c17 | 4 | mixed, AIG, DeMorgan | recovered in all three | equivalent |
+| c432 | 4 and 16 | AIG | recovered | equivalent |
+| c880 | 4 and 16 | AIG | recovered | equivalent |
+| c1908 | 4 | AIG | recovered | equivalent |
+| c1908 | 16 | AIG | no complete candidate; strip absorbed | not applicable |
+
+The formal result in this table comes from test-only miters against the unlocked
+benchmarks. The read-only command itself has no oracle: it formally proves the
+local restore-equality and strip-point-function properties, then reports the
+inferred cube for independent validation.
+
 The signal-probability-skew (SPS) command provides a topology-independent
 ranking of suspicious gates:
 
