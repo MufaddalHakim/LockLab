@@ -26,6 +26,11 @@ from locklab.locking import (
 )
 from locklab.sat_attack import appsat_attack, sat_attack
 from locklab.sfll_analysis import assess_sfll_hd0
+from locklab.study import (
+    expand_study_cases,
+    load_study_configuration,
+    run_comparative_study,
+)
 from locklab.validation import ValidationResult, prove_key_equivalence, validate_key
 
 
@@ -151,6 +156,27 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--reference-top")
     validate_parser.add_argument("--candidate-top")
 
+    study_parser = subparsers.add_parser(
+        "study",
+        help="Run or resume a configured comparative benchmark study",
+    )
+    study_parser.add_argument("configuration", type=Path)
+    study_parser.add_argument(
+        "--retry-failures",
+        action="store_true",
+        help="Retry recorded failed, partial, unsupported, or timed-out cases",
+    )
+    study_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Run only the first N expanded cases",
+    )
+    study_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the expanded matrix without creating files",
+    )
+
     return parser
 
 
@@ -195,6 +221,9 @@ def main() -> None:
         if args.command == "validate":
             passed = _run_validate(args)
             raise SystemExit(0 if passed else 1)
+        if args.command == "study":
+            _run_study(args)
+            return
     except (CircuitError, OSError, ValueError) as error:
         parser.exit(1, f"locklab: error: {error}\n")
 
@@ -210,6 +239,48 @@ def _run_info(path: Path, *, top: str | None) -> None:
     print(f"Gates: {len(circuit.gates)}")
     for kind, count in sorted(gate_counts.items()):
         print(f"  {kind}: {count}")
+
+
+def _run_study(args: argparse.Namespace) -> None:
+    configuration = load_study_configuration(args.configuration)
+    cases = expand_study_cases(configuration)
+    if args.limit is not None:
+        if args.limit <= 0:
+            raise CircuitError("study case limit must be greater than zero")
+        cases = cases[: args.limit]
+    if args.dry_run:
+        print(f"Study: {configuration.name}")
+        print(f"Expanded cases: {len(cases)}")
+        for case in cases:
+            distance = (
+                "-" if case.hamming_distance is None else case.hamming_distance
+            )
+            threshold = (
+                "-" if case.appsat_threshold is None else case.appsat_threshold
+            )
+            print(
+                f"  {case.identifier}: benchmark={case.benchmark} "
+                f"scheme={case.scheme} key={case.key_size} h={distance} "
+                f"seed={case.seed} appsat-threshold={threshold}"
+            )
+        return
+
+    result = run_comparative_study(
+        args.configuration,
+        retry_failures=args.retry_failures,
+        limit=args.limit,
+    )
+    print(f"Study: {configuration.name}")
+    print(f"Planned cases: {result.planned_cases}")
+    print(f"Executed cases: {result.executed_cases}")
+    print(f"Skipped existing cases: {result.skipped_existing}")
+    statuses = ", ".join(
+        f"{status}={count}"
+        for status, count in sorted(result.status_counts.items())
+    )
+    print(f"Statuses: {statuses or 'none'}")
+    print(f"Raw records: {result.raw_path}")
+    print(f"CSV summary: {result.summary_path}")
 
 
 def _run_lock(args: argparse.Namespace) -> None:

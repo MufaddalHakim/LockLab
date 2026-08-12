@@ -376,6 +376,49 @@ locklab attack sat \
   benchmarks/sources/iscas85/c1908.bench
 ```
 
+## Run the comparative benchmark study
+
+The tracked study configurations apply the same measurement pipeline to RLL,
+MUX locking, Anti-SAT, compound RLL + Anti-SAT, SFLL-HD0, and SFLL-HDh. Inspect
+the seven-case c17 smoke matrix without executing it:
+
+```bash
+locklab study configs/comparative_smoke.json --dry-run
+```
+
+Run the smoke matrix, followed by the full 312-case matrix:
+
+```bash
+locklab study configs/comparative_smoke.json
+locklab study configs/comparative_matrix.json
+```
+
+Activate OSS CAD Suite first because each supported case formally checks the
+planted key and runs Yices-backed attacks. The full matrix covers c17, c432,
+c880, and c1908; three seeds; multiple key sizes; SFLL distances one and two;
+and AppSAT error thresholds 0.01 and 0.05. The JSON configuration is the
+experiment specification, including the sample count and per-solver-call
+timeout.
+
+Each completed case records locking overhead, formal equivalence, exact-SAT
+distinguishing inputs and solver calls, AppSAT sampled error, structural
+detections, SPS/ADS rank, runtime, seed, tool versions, Git provenance, and a
+Material Passport. Each record also hashes the exact benchmark and study
+configuration used. Raw append-only records are written to
+`runs/<study-name>.jsonl`; a normalized summary is rebuilt at
+`runs/<study-name>.csv`. Both generated files are ignored by Git.
+
+Execution is resumable by default. A repeated command skips existing cases,
+while `--retry-failures` reruns only failed, partial, timed-out, or unsupported
+records. `--limit N` is useful for a short pilot. LockLab refuses to mix records
+when the configuration file's SHA-256 digest changes. Invalid scheme/benchmark
+combinations remain visible as `unsupported` rows instead of disappearing from
+the dataset.
+
+Runtime values are meaningful only within a controlled environment. AppSAT's
+reported error is a seeded sample estimate and must not be interpreted as a
+formal proof; the separate formal-equivalence field provides that distinction.
+
 ## Tests
 
 ```bash

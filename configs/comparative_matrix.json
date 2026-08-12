@@ -1,0 +1,49 @@
+{
+  "name": "comparative_matrix",
+  "benchmark_root": "../benchmarks/sources/iscas85",
+  "benchmarks": [
+    "c17",
+    "c432",
+    "c880",
+    "c1908"
+  ],
+  "seeds": [
+    1,
+    7,
+    42
+  ],
+  "schemes": [
+    {
+      "name": "rll",
+      "key_sizes": [4, 8]
+    },
+    {
+      "name": "mux",
+      "key_sizes": [4, 8]
+    },
+    {
+      "name": "antisat",
+      "key_sizes": [4, 8]
+    },
+    {
+      "name": "rll-antisat",
+      "key_sizes": [8]
+    },
+    {
+      "name": "sfll-hd0",
+      "key_sizes": [4, 8]
+    },
+    {
+      "name": "sfll-hd",
+      "key_sizes": [4, 8],
+      "hamming_distances": [1, 2]
+    }
+  ],
+  "exact_sat": true,
+  "appsat": {
+    "enabled": true,
+    "samples": 256,
+    "thresholds": [0.01, 0.05]
+  },
+  "solver_timeout_seconds": 30
+}
