@@ -15,7 +15,15 @@ C17_BENCH = REPOSITORY_ROOT / "benchmarks/sources/iscas85/c17.bench"
 
 @pytest.mark.parametrize(
     "scheme",
-    ("rll", "mux", "antisat", "rll-antisat", "sfll-hd0", "sfll-hd"),
+    (
+        "rll",
+        "mux",
+        "antisat",
+        "sarlock",
+        "rll-antisat",
+        "sfll-hd0",
+        "sfll-hd",
+    ),
 )
 def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
     locked_path = tmp_path / "outputs/c17_locked.bench"
@@ -56,6 +64,22 @@ def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
         assert {item["component"] for item in metadata["insertions"]} == {
             "rll",
             "antisat",
+        }
+    if scheme == "sarlock":
+        assert "Wrong-key error cubes: 1" in locked.stdout
+        assert metadata["sarlock"] == {
+            "key_size": 2,
+            "selected_inputs": [
+                item["source_signal"] for item in metadata["insertions"]
+            ],
+            "protected_output": metadata["insertions"][0][
+                "protected_signal"
+            ],
+            "input_match_signal": "sarlock_input_match",
+            "key_mask_signal": "sarlock_key_mask",
+            "flip_signal": "sarlock_flip",
+            "wrong_key_error_cubes": 1,
+            "wrong_key_error_vectors": 8,
         }
     if scheme == "sfll-hd":
         assert metadata["sfll"] == {

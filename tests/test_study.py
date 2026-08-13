@@ -81,6 +81,44 @@ def test_study_configuration_rejects_hd_without_distances(tmp_path: Path) -> Non
         load_study_configuration(configuration_path)
 
 
+def test_study_configuration_accepts_sarlock(tmp_path: Path) -> None:
+    configuration_path = tmp_path / "sarlock.json"
+    _write_configuration(
+        configuration_path,
+        name="sarlock",
+        scheme="sarlock",
+    )
+
+    configuration = load_study_configuration(configuration_path)
+    cases = expand_study_cases(configuration)
+
+    assert len(cases) == 1
+    assert cases[0].scheme == "sarlock"
+
+
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for study execution",
+)
+def test_study_runs_sarlock_case(tmp_path: Path) -> None:
+    configuration_path = tmp_path / "sarlock.json"
+    _write_configuration(
+        configuration_path,
+        name="sarlock",
+        scheme="sarlock",
+    )
+
+    result = run_comparative_study(
+        configuration_path,
+        output_directory=tmp_path / "runs",
+    )
+    record = json.loads(result.raw_path.read_text(encoding="utf-8"))
+
+    assert result.status_counts == {"completed": 1}
+    assert record["case"]["scheme"] == "sarlock"
+    assert record["metrics"]["formal_equivalent"] is True
+
+
 def test_study_records_unsupported_cases_without_solver(tmp_path: Path) -> None:
     configuration_path = tmp_path / "unsupported.json"
     _write_configuration(

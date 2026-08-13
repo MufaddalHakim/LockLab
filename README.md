@@ -5,10 +5,10 @@ locking. It reads Verilog or BENCH circuits, shows circuit information, inserts
 logic-locking gates, and validates candidate keys.
 
 The current version implements Random Logic Locking (RLL), MUX-based locking,
-type-0 Anti-SAT, SFLL-HD0, and general SFLL-HDh defenses; exact and approximate
-oracle-guided SAT attacks; structural and functional SFLL-HD0 analysis; and
-structural and signal-probability Anti-SAT analysis. All commands use the same
-circuit model and parsers.
+type-0 Anti-SAT, SARLock, SFLL-HD0, and general SFLL-HDh defenses; exact and
+approximate oracle-guided SAT attacks; structural and functional SFLL-HD0
+analysis; and structural and signal-probability Anti-SAT analysis. All commands
+use the same circuit model and parsers.
 
 ## Setup
 
@@ -105,6 +105,47 @@ low output corruption and recognizable structure, so it is a research defense
 for studying SAT behavior rather than a complete production protection scheme.
 The implementation follows the type-0 construction described in the original
 [Anti-SAT paper](https://eprint.iacr.org/2017/761).
+
+SARLock inserts a masked point function at a seeded gate-driven primary output:
+
+```bash
+locklab lock benchmarks/sources/iscas85/c432.bench \
+  --scheme sarlock \
+  --key-size 16 \
+  --seed 42
+```
+
+The key size must be at least one and cannot exceed the number of primary
+inputs. LockLab uses the seed to choose `k` distinct primary inputs, one output,
+and the planted key. If `X` is the selected-input vector, `K` is the runtime
+key, and `Kc` is the planted key, the injected signal is:
+
+```text
+flip = (X == K) AND (K != Kc)
+locked_output = original_output XOR flip
+```
+
+The mask `(K != Kc)` makes the flip permanently zero under the planted key.
+Every wrong key instead corrupts exactly the one selected-input cube `X == K`.
+For a circuit with `n` primary inputs, that cube represents `2^(n-k)` complete
+input vectors because the unselected inputs remain free. Thus one oracle query
+can distinguish at most one wrong key in the ideal point-function model. The
+metadata records the selected inputs, protected output, comparator/mask/flip
+signals, and the number of complete error vectors per wrong key.
+
+This is a deterministic, explicit gate-level reference implementation of the
+construction in the original [SARLock paper](https://doi.org/10.1109/HST.2016.7495588).
+It intentionally preserves a recognizable comparator and mask boundary for
+reproducible experiments. SARLock's low corruptibility and exposed standalone
+structure make it vulnerable to approximate and removal-style analysis, so it
+should not be interpreted as a complete production defense.
+
+Run the SARLock behavioral, serialization, CLI, and formal checks—including all
+bundled ISCAS-85 benchmark circuits—with:
+
+```bash
+pytest -q -k sarlock
+```
 
 The compound scheme combines RLL's higher wrong-key corruption with Anti-SAT's
 point-function behavior:

@@ -21,6 +21,7 @@ from locklab.locking import (
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sarlock,
     lock_sfll_hd,
     lock_sfll_hd0,
 )
@@ -72,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
             "rll",
             "mux",
             "antisat",
+            "sarlock",
             "rll-antisat",
             "sfll-hd0",
             "sfll-hd",
@@ -356,6 +358,8 @@ def _run_lock(args: argparse.Namespace) -> None:
         lock_result = lock_mux(source, key_size=args.key_size, seed=args.seed)
     elif args.scheme == "antisat":
         lock_result = lock_antisat(source, key_size=args.key_size, seed=args.seed)
+    elif args.scheme == "sarlock":
+        lock_result = lock_sarlock(source, key_size=args.key_size, seed=args.seed)
     elif args.scheme == "rll-antisat":
         lock_result = lock_rll_antisat(
             source,
@@ -400,6 +404,12 @@ def _run_lock(args: argparse.Namespace) -> None:
     if lock_result.hamming_distance is not None:
         print(f"Hamming distance: {lock_result.hamming_distance}")
         print(f"Protected cubes: {lock_result.protected_cube_count}")
+    if lock_result.wrong_key_error_vectors is not None:
+        print("Wrong-key error cubes: 1")
+        print(
+            "Complete input vectors per wrong key: "
+            f"{lock_result.wrong_key_error_vectors}"
+        )
     print(f"Metadata: {metadata}")
     print(
         f"Validation: PASS ({validation.method}, "
@@ -923,6 +933,20 @@ def _write_lock_metadata(
                 insertion.source_signal
                 for insertion in lock_result.insertions
             ],
+        }
+    if lock_result.sarlock_flip_signal is not None:
+        payload["sarlock"] = {
+            "key_size": len(lock_result.key),
+            "selected_inputs": [
+                insertion.source_signal
+                for insertion in lock_result.insertions
+            ],
+            "protected_output": lock_result.insertions[0].protected_signal,
+            "input_match_signal": lock_result.sarlock_input_match_signal,
+            "key_mask_signal": lock_result.sarlock_key_mask_signal,
+            "flip_signal": lock_result.sarlock_flip_signal,
+            "wrong_key_error_cubes": 1,
+            "wrong_key_error_vectors": lock_result.wrong_key_error_vectors,
         }
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",

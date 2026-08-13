@@ -28,6 +28,10 @@ class LockResult:
     protected_cube_count: int | None = None
     strip_match_signal: str | None = None
     restore_match_signal: str | None = None
+    sarlock_input_match_signal: str | None = None
+    sarlock_key_mask_signal: str | None = None
+    sarlock_flip_signal: str | None = None
+    wrong_key_error_vectors: int | None = None
 
     @property
     def key_string(self) -> str:
@@ -227,6 +231,177 @@ def lock_antisat(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
         seed=seed,
         data_inputs=circuit.inputs,
         key_index_offset=0,
+    )
+
+
+def lock_sarlock(circuit: Circuit, *, key_size: int, seed: int) -> LockResult:
+    """Insert a seeded SARLock point-function block.
+
+    The injected flip is ``(selected inputs == runtime key) AND
+    (runtime key != planted key)``.  Consequently the planted key never
+    changes the circuit, while every wrong key flips exactly one selected-input
+    cube at a seeded gate-driven primary output.
+    """
+
+    circuit.validate()
+    if key_size <= 0:
+        raise CircuitError("SARLock key size must be greater than zero")
+    if key_size > len(circuit.inputs):
+        raise CircuitError(
+            f"SARLock key size {key_size} exceeds "
+            f"{len(circuit.inputs)} primary inputs"
+        )
+
+    driven_outputs = tuple(
+        output
+        for output in circuit.outputs
+        if any(gate.output == output for gate in circuit.gates)
+    )
+    if not driven_outputs:
+        raise CircuitError("SARLock requires a gate-driven primary output")
+
+    random_source = random.Random(seed)
+    selected_inputs = tuple(random_source.sample(circuit.inputs, key_size))
+    protected_output = random_source.choice(driven_outputs)
+    key = tuple(random_source.randint(0, 1) for _ in range(key_size))
+
+    used_signals = set(circuit.inputs) | set(circuit.outputs)
+    used_signals.update(gate.output for gate in circuit.gates)
+    used_gate_names = {gate.name for gate in circuit.gates}
+    key_inputs = tuple(
+        _unique_name(f"keyinput_{index}", used_signals)
+        for index in range(key_size)
+    )
+    protected_source = _unique_name(
+        f"{protected_output}_locksrc_sarlock",
+        used_signals,
+    )
+    locked_gates = [
+        Gate(
+            name=gate.name,
+            kind=gate.kind,
+            inputs=gate.inputs,
+            output=(
+                protected_source
+                if gate.output == protected_output
+                else gate.output
+            ),
+        )
+        for gate in circuit.gates
+    ]
+
+    input_comparisons: list[str] = []
+    key_mismatches: list[str] = []
+    insertions: list[LockInsertion] = []
+    for index, (data_input, correct_bit, key_input) in enumerate(
+        zip(selected_inputs, key, key_inputs)
+    ):
+        input_comparison = _unique_name(
+            f"sarlock_input_compare_{index}",
+            used_signals,
+        )
+        key_mismatch = _unique_name(
+            f"sarlock_key_mismatch_{index}",
+            used_signals,
+        )
+        locked_gates.extend(
+            (
+                Gate(
+                    name=_unique_name(
+                        f"sarlock_input_compare_gate_{index}",
+                        used_gate_names,
+                    ),
+                    kind="XNOR",
+                    inputs=(data_input, key_input),
+                    output=input_comparison,
+                ),
+                Gate(
+                    name=_unique_name(
+                        f"sarlock_key_mismatch_gate_{index}",
+                        used_gate_names,
+                    ),
+                    kind="NOT" if correct_bit else "BUF",
+                    inputs=(key_input,),
+                    output=key_mismatch,
+                ),
+            )
+        )
+        input_comparisons.append(input_comparison)
+        key_mismatches.append(key_mismatch)
+        insertions.append(
+            LockInsertion(
+                key_index=index,
+                key_input=key_input,
+                correct_bit=correct_bit,
+                gate_kind="XNOR",
+                protected_signal=protected_output,
+                source_signal=data_input,
+            )
+        )
+
+    if key_size == 1:
+        input_match = input_comparisons[0]
+        key_mask = key_mismatches[0]
+    else:
+        input_match = _unique_name("sarlock_input_match", used_signals)
+        key_mask = _unique_name("sarlock_key_mask", used_signals)
+        locked_gates.extend(
+            (
+                Gate(
+                    name=_unique_name(
+                        "sarlock_input_match_gate",
+                        used_gate_names,
+                    ),
+                    kind="AND",
+                    inputs=tuple(input_comparisons),
+                    output=input_match,
+                ),
+                Gate(
+                    name=_unique_name(
+                        "sarlock_key_mask_gate",
+                        used_gate_names,
+                    ),
+                    kind="OR",
+                    inputs=tuple(key_mismatches),
+                    output=key_mask,
+                ),
+            )
+        )
+
+    flip_signal = _unique_name("sarlock_flip", used_signals)
+    locked_gates.extend(
+        (
+            Gate(
+                name=_unique_name("sarlock_flip_gate", used_gate_names),
+                kind="AND",
+                inputs=(input_match, key_mask),
+                output=flip_signal,
+            ),
+            Gate(
+                name=_unique_name("sarlock_output_gate", used_gate_names),
+                kind="XOR",
+                inputs=(protected_source, flip_signal),
+                output=protected_output,
+            ),
+        )
+    )
+
+    locked = Circuit(
+        name=f"{circuit.name}_sarlock",
+        inputs=(*circuit.inputs, *key_inputs),
+        outputs=circuit.outputs,
+        gates=tuple(locked_gates),
+    )
+    locked.validate()
+    return LockResult(
+        circuit=locked,
+        key=key,
+        seed=seed,
+        insertions=tuple(insertions),
+        sarlock_input_match_signal=input_match,
+        sarlock_key_mask_signal=key_mask,
+        sarlock_flip_signal=flip_signal,
+        wrong_key_error_vectors=1 << (len(circuit.inputs) - key_size),
     )
 
 

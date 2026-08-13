@@ -11,9 +11,11 @@ from locklab.locking import (
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sarlock,
     lock_sfll_hd,
     lock_sfll_hd0,
 )
+from locklab.sat_attack import sat_attack
 from locklab.validation import prove_key_equivalence, validate_key
 
 
@@ -174,6 +176,157 @@ def test_antisat_rejects_invalid_key_size(key_size: int) -> None:
 
     with pytest.raises(CircuitError, match="even and at least 4"):
         lock_antisat(original, key_size=key_size, seed=0)
+
+
+def test_sarlock_is_deterministic_and_uses_primary_input_cube() -> None:
+    original = load_bench(C17_BENCH)
+
+    first = lock_sarlock(original, key_size=3, seed=42)
+    second = lock_sarlock(original, key_size=3, seed=42)
+
+    assert first == second
+    assert len(first.key) == 3
+    assert len(first.circuit.inputs) == len(original.inputs) + 3
+    assert len(first.circuit.gates) - len(original.gates) == 2 * 3 + 4
+    selected_inputs = tuple(item.source_signal for item in first.insertions)
+    assert len(set(selected_inputs)) == 3
+    assert set(selected_inputs) <= set(original.inputs)
+    assert len({item.protected_signal for item in first.insertions}) == 1
+    assert first.sarlock_input_match_signal is not None
+    assert first.sarlock_key_mask_signal is not None
+    assert first.sarlock_flip_signal is not None
+    assert first.wrong_key_error_vectors == 4
+
+
+def test_sarlock_correct_key_passes_and_each_wrong_key_has_one_error_cube() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=3, seed=42)
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+    selected_inputs = tuple(item.source_signal for item in locked.insertions)
+
+    correct = validate_key(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=locked.key,
+    )
+
+    assert correct.passed
+    assert correct.method == "exhaustive"
+    assert correct.vectors_checked == 32
+
+    for key_value in range(1 << len(locked.key)):
+        wrong_key = tuple(map(int, f"{key_value:0{len(locked.key)}b}"))
+        if wrong_key == locked.key:
+            continue
+
+        mismatching_vectors = 0
+        for vector in range(1 << len(original.inputs)):
+            bits = tuple(map(int, f"{vector:0{len(original.inputs)}b}"))
+            data_values = dict(zip(original.inputs, bits))
+            candidate_values = {
+                **data_values,
+                **dict(zip(key_inputs, wrong_key)),
+            }
+            differs = (
+                original.evaluate(data_values)
+                != locked.circuit.evaluate(candidate_values)
+            )
+            selected_projection = tuple(
+                data_values[name] for name in selected_inputs
+            )
+            assert differs == (selected_projection == wrong_key)
+            mismatching_vectors += differs
+
+        assert mismatching_vectors == locked.wrong_key_error_vectors
+
+
+def test_sarlock_locked_bench_round_trip_validates(tmp_path: Path) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=3, seed=9)
+    output = tmp_path / "locked-sarlock.bench"
+    write_bench(locked.circuit, output)
+
+    reloaded = load_bench(output)
+    result = validate_key(
+        original,
+        reloaded,
+        key_inputs=tuple(item.key_input for item in locked.insertions),
+        key=locked.key,
+    )
+
+    assert result.passed
+
+
+@pytest.mark.parametrize("key_size", (0, 6))
+def test_sarlock_rejects_invalid_key_size(key_size: int) -> None:
+    original = load_bench(C17_BENCH)
+
+    with pytest.raises(CircuitError, match="SARLock key size"):
+        lock_sarlock(original, key_size=key_size, seed=0)
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "key_size"),
+    (
+        ("c17", 4),
+        ("c432", 16),
+        ("c880", 16),
+        ("c1908", 16),
+    ),
+)
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for formal SARLock validation",
+)
+def test_sarlock_formally_validates_benchmarks(
+    benchmark: str,
+    key_size: int,
+) -> None:
+    original = load_bench(
+        REPOSITORY_ROOT / f"benchmarks/sources/iscas85/{benchmark}.bench"
+    )
+    locked = lock_sarlock(original, key_size=key_size, seed=42)
+    key_inputs = tuple(item.key_input for item in locked.insertions)
+
+    correct = prove_key_equivalence(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=locked.key,
+    )
+    wrong_key = (1 - locked.key[0], *locked.key[1:])
+    wrong = prove_key_equivalence(
+        original,
+        locked.circuit,
+        key_inputs=key_inputs,
+        key=wrong_key,
+    )
+
+    assert correct.passed
+    assert not wrong.passed
+    assert len(wrong.mismatches) == 1
+    mismatch_values = dict(
+        zip(original.inputs, map(int, wrong.mismatches[0].inputs))
+    )
+    assert tuple(
+        mismatch_values[item.source_signal] for item in locked.insertions
+    ) == wrong_key
+
+
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for the SARLock SAT experiment",
+)
+def test_sarlock_sat_attack_requires_one_dip_per_wrong_key() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=4, seed=42)
+
+    result = sat_attack(locked.circuit, original)
+
+    assert result.key == locked.key
+    assert len(result.observations) == (1 << len(locked.key)) - 1
+    assert result.validation.passed
 
 
 def test_rll_antisat_is_deterministic_and_splits_the_key_evenly() -> None:

@@ -26,6 +26,7 @@ from locklab.locking import (
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sarlock,
     lock_sfll_hd,
     lock_sfll_hd0,
 )
@@ -40,6 +41,7 @@ SUPPORTED_SCHEMES = {
     "rll",
     "mux",
     "antisat",
+    "sarlock",
     "rll-antisat",
     "sfll-hd0",
     "sfll-hd",
@@ -584,6 +586,8 @@ def _lock_case(oracle: Circuit, case: StudyCase) -> LockResult:
         return lock_mux(oracle, key_size=case.key_size, seed=case.seed)
     if case.scheme == "antisat":
         return lock_antisat(oracle, key_size=case.key_size, seed=case.seed)
+    if case.scheme == "sarlock":
+        return lock_sarlock(oracle, key_size=case.key_size, seed=case.seed)
     if case.scheme == "rll-antisat":
         return lock_rll_antisat(oracle, key_size=case.key_size, seed=case.seed)
     if case.scheme == "sfll-hd0":
@@ -610,7 +614,7 @@ def _analysis_target(
         return str(antisat_candidates[0].block_signal)
     if sfll_exact_candidates:
         return str(sfll_exact_candidates[0].strip_match_signal)
-    return lock_result.restore_match_signal
+    return lock_result.sarlock_flip_signal or lock_result.restore_match_signal
 
 
 def _record(
