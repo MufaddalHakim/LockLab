@@ -8,8 +8,10 @@ from pathlib import Path
 
 from locklab.analysis import (
     find_antisat_candidates,
+    find_sarlock_candidates,
     find_sfll_hd0_candidates,
     remove_antisat,
+    remove_sarlock,
     signal_probability_scores,
 )
 from locklab.circuit import CircuitError
@@ -115,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     structural_parser.add_argument("locked", type=Path)
     structural_parser.add_argument("--top", help="Top module for Verilog input")
+    sarlock_structural_parser = attack_subparsers.add_parser(
+        "sarlock-structural",
+        help="Locate an explicit SARLock block by its gate topology",
+    )
+    sarlock_structural_parser.add_argument("locked", type=Path)
+    sarlock_structural_parser.add_argument(
+        "--top",
+        help="Top module for Verilog input",
+    )
     sfll_structural_parser = attack_subparsers.add_parser(
         "sfll-structural",
         help="Locate an explicit SFLL-HD0 block by its gate topology",
@@ -181,6 +192,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     removal_parser.add_argument("locked", type=Path)
     removal_parser.add_argument("--top", help="Top module for Verilog input")
+    sarlock_removal_parser = attack_subparsers.add_parser(
+        "sarlock-remove",
+        help="Bypass a structurally recognized SARLock block",
+    )
+    sarlock_removal_parser.add_argument("locked", type=Path)
+    sarlock_removal_parser.add_argument(
+        "--top",
+        help="Top module for Verilog input",
+    )
     sps_parser = attack_subparsers.add_parser(
         "antisat-sps",
         help="Rank Anti-SAT candidates using signal probability skew",
@@ -244,6 +264,9 @@ def main() -> None:
         if args.command == "attack" and args.attack_kind == "antisat-structural":
             _run_antisat_structural_attack(args.locked, top=args.top)
             return
+        if args.command == "attack" and args.attack_kind == "sarlock-structural":
+            _run_sarlock_structural_attack(args.locked, top=args.top)
+            return
         if args.command == "attack" and args.attack_kind == "sfll-structural":
             _run_sfll_structural_attack(args.locked, top=args.top)
             return
@@ -269,6 +292,9 @@ def main() -> None:
             return
         if args.command == "attack" and args.attack_kind == "antisat-remove":
             _run_antisat_removal_attack(args.locked, top=args.top)
+            return
+        if args.command == "attack" and args.attack_kind == "sarlock-remove":
+            _run_sarlock_removal_attack(args.locked, top=args.top)
             return
         if args.command == "attack" and args.attack_kind == "antisat-sps":
             _run_antisat_sps_attack(args.locked, top=args.top)
@@ -505,6 +531,33 @@ def _run_antisat_structural_attack(path: Path, *, top: str | None) -> None:
         print(f"  Suspected key inputs: {', '.join(candidate.key_inputs)}")
 
 
+def _run_sarlock_structural_attack(path: Path, *, top: str | None) -> None:
+    circuit = load_circuit(path, top=top)
+    candidates = find_sarlock_candidates(circuit)
+    print(f"SARLock structural candidates: {len(candidates)}")
+    if not candidates:
+        print("No matching explicit SARLock structure found")
+        return
+
+    for index, candidate in enumerate(candidates, start=1):
+        print(f"Candidate {index}:")
+        print(f"  Protected output: {candidate.protected_output}")
+        print(f"  Protected source: {candidate.protected_source}")
+        print(f"  Flip signal: {candidate.flip_signal}")
+        print(f"  Input equality comparator: {candidate.input_match_signal}")
+        print(f"  Planted-key mask: {candidate.key_mask_signal}")
+        print(f"  Suspected key size: {candidate.key_size}")
+        print(f"  Protected inputs: {', '.join(candidate.protected_inputs)}")
+        print(f"  Inferred planted key: {candidate.inferred_key_string}")
+        print(f"  Suspected key inputs: {', '.join(candidate.key_inputs)}")
+        print("  Key-to-input mapping:")
+        for mapping in candidate.mappings:
+            print(
+                f"    {mapping.key_input} -> {mapping.protected_input} "
+                f"(planted bit {mapping.correct_bit})"
+            )
+
+
 def _run_sfll_structural_attack(path: Path, *, top: str | None) -> None:
     circuit = load_circuit(path, top=top)
     candidates = find_sfll_hd0_candidates(circuit)
@@ -682,6 +735,31 @@ def _default_antisat_removal_output(source: Path) -> Path:
     source = source.expanduser()
     base_name = source.stem.removesuffix("_locked")
     filename = f"{base_name}_antisat_removed{source.suffix.lower()}"
+    return (Path.cwd() / "outputs" / filename).resolve()
+
+
+def _run_sarlock_removal_attack(path: Path, *, top: str | None) -> None:
+    circuit = load_circuit(path, top=top)
+    result = remove_sarlock(circuit)
+    output = _default_sarlock_removal_output(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_circuit(result.circuit, output)
+
+    written_circuit = load_circuit(output)
+    if find_sarlock_candidates(written_circuit):
+        raise CircuitError("recovered circuit still contains a SARLock candidate")
+
+    print(f"Recovered circuit: {output}")
+    print(f"Removed SARLock blocks: {len(result.candidates)}")
+    print(f"Removed gates: {result.removed_gate_count}")
+    print(f"Removed suspected key inputs: {len(result.removed_inputs)}")
+    print(f"Remaining inputs: {len(result.circuit.inputs)}")
+
+
+def _default_sarlock_removal_output(source: Path) -> Path:
+    source = source.expanduser()
+    base_name = source.stem.removesuffix("_locked")
+    filename = f"{base_name}_sarlock_removed{source.suffix.lower()}"
     return (Path.cwd() / "outputs" / filename).resolve()
 
 

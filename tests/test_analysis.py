@@ -7,8 +7,10 @@ import pytest
 
 from locklab.analysis import (
     find_antisat_candidates,
+    find_sarlock_candidates,
     find_sfll_hd0_candidates,
     remove_antisat,
+    remove_sarlock,
     signal_probability_scores,
 )
 from locklab.bench import load_bench, write_bench
@@ -19,6 +21,7 @@ from locklab.locking import (
     lock_mux,
     lock_rll,
     lock_rll_antisat,
+    lock_sarlock,
     lock_sfll_hd,
     lock_sfll_hd0,
 )
@@ -727,3 +730,223 @@ def test_cli_removes_antisat_to_outputs_without_metadata(tmp_path: Path) -> None
     assert output.is_file()
     assert not output.with_suffix(".lock.json").exists()
     assert find_antisat_candidates(load_bench(output)) == ()
+
+
+def test_finds_sarlock_without_metadata_or_signal_names() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=4, seed=42)
+    renamed = _rename_internal_signals(locked.circuit)
+
+    candidates = find_sarlock_candidates(renamed)
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.key_size == 4
+    assert candidate.inferred_key == locked.key
+    assert candidate.key_inputs == tuple(
+        insertion.key_input for insertion in locked.insertions
+    )
+    assert candidate.protected_inputs == tuple(
+        insertion.source_signal for insertion in locked.insertions
+    )
+    assert candidate.protected_output == locked.insertions[0].protected_signal
+    assert "sarlock" not in candidate.flip_signal
+
+
+def test_sarlock_analysis_supports_one_bit_key() -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=1, seed=42)
+
+    candidates = find_sarlock_candidates(locked.circuit)
+
+    assert len(candidates) == 1
+    assert candidates[0].key_size == 1
+    assert candidates[0].inferred_key == locked.key
+
+
+@pytest.mark.parametrize("benchmark", ("c17", "c432", "c880", "c1908"))
+@pytest.mark.parametrize("representation", ("bench", "verilog"))
+def test_finds_and_removes_sarlock_on_benchmark_serializations(
+    benchmark: str,
+    representation: str,
+    tmp_path: Path,
+) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+    locked = lock_sarlock(original, key_size=4, seed=42)
+    suffix = ".bench" if representation == "bench" else ".v"
+    locked_path = tmp_path / f"{benchmark}_locked{suffix}"
+    if representation == "bench":
+        write_bench(locked.circuit, locked_path)
+    else:
+        if shutil.which("yosys") is None:
+            pytest.skip("Yosys is required")
+        write_verilog(locked.circuit, locked_path)
+    reloaded = load_circuit(locked_path)
+
+    candidates = find_sarlock_candidates(reloaded)
+    removal = remove_sarlock(reloaded)
+
+    assert len(candidates) == 1
+    assert candidates[0].inferred_key == locked.key
+    assert removal.circuit.inputs == original.inputs
+    assert removal.removed_inputs == candidates[0].key_inputs
+    assert find_sarlock_candidates(removal.circuit) == ()
+    validation = validate_key(
+        original,
+        removal.circuit,
+        key_inputs=(),
+        key=(),
+    )
+    assert validation.passed
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "key_size"),
+    (("c17", 4), ("c432", 16), ("c880", 16), ("c1908", 16)),
+)
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for formal SARLock removal validation",
+)
+def test_sarlock_removal_formally_restores_benchmarks(
+    benchmark: str,
+    key_size: int,
+) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+    locked = lock_sarlock(original, key_size=key_size, seed=42)
+    removal = remove_sarlock(locked.circuit)
+
+    proof = prove_key_equivalence(
+        original,
+        removal.circuit,
+        key_inputs=(),
+        key=(),
+    )
+
+    assert proof.passed
+
+
+@pytest.mark.parametrize("benchmark", ("c17", "c432", "c880", "c1908"))
+def test_unlocked_benchmarks_have_no_sarlock_candidate(benchmark: str) -> None:
+    original = load_bench(BENCHMARK_ROOT / f"{benchmark}.bench")
+
+    assert find_sarlock_candidates(original) == ()
+
+
+@pytest.mark.parametrize("scheme", ("antisat", "sfll-hd0", "sfll-hd"))
+def test_other_point_function_schemes_are_not_sarlock_candidates(
+    scheme: str,
+) -> None:
+    original = load_bench(C17_BENCH)
+    if scheme == "antisat":
+        locked = lock_antisat(original, key_size=4, seed=42)
+    elif scheme == "sfll-hd0":
+        locked = lock_sfll_hd0(original, key_size=4, seed=42)
+    else:
+        locked = lock_sfll_hd(
+            original,
+            key_size=4,
+            hamming_distance=1,
+            seed=42,
+        )
+
+    assert find_sarlock_candidates(locked.circuit) == ()
+
+
+def test_remove_sarlock_rejects_unmatched_circuit() -> None:
+    original = load_bench(C17_BENCH)
+
+    with pytest.raises(CircuitError, match="no matching explicit SARLock"):
+        remove_sarlock(original)
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="Yosys is required")
+def test_sarlock_exact_detector_does_not_overclaim_after_abc_synthesis(
+    tmp_path: Path,
+) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=4, seed=42)
+    synthesized = _synthesize_with_abc(
+        locked.circuit,
+        tmp_path,
+        gate_library="aig",
+    )
+
+    assert find_sarlock_candidates(synthesized) == ()
+    with pytest.raises(CircuitError, match="no matching explicit SARLock"):
+        remove_sarlock(synthesized)
+
+
+def test_cli_reports_sarlock_candidate_without_metadata_or_files(
+    tmp_path: Path,
+) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=4, seed=42)
+    locked_path = tmp_path / "locked.bench"
+    write_bench(locked.circuit, locked_path)
+    files_before = set(tmp_path.rglob("*"))
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "attack",
+            "sarlock-structural",
+            str(locked_path),
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SARLock structural candidates: 1" in result.stdout
+    assert f"Inferred planted key: {locked.key_string}" in result.stdout
+    for insertion in locked.insertions:
+        expected = (
+            f"{insertion.key_input} -> {insertion.source_signal} "
+            f"(planted bit {insertion.correct_bit})"
+        )
+        assert expected in result.stdout
+    assert set(tmp_path.rglob("*")) == files_before
+
+
+def test_cli_removes_sarlock_to_outputs_without_metadata(tmp_path: Path) -> None:
+    original = load_bench(C17_BENCH)
+    locked = lock_sarlock(original, key_size=4, seed=42)
+    locked_path = tmp_path / "c17_locked.bench"
+    write_bench(locked.circuit, locked_path)
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "locklab",
+            "attack",
+            "sarlock-remove",
+            str(locked_path),
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    output = tmp_path / "outputs/c17_sarlock_removed.bench"
+    assert result.returncode == 0, result.stderr
+    assert f"Recovered circuit: {output}" in result.stdout
+    assert "Removed SARLock blocks: 1" in result.stdout
+    assert "Removed suspected key inputs: 4" in result.stdout
+    assert output.is_file()
+    assert not output.with_suffix(".lock.json").exists()
+    recovered = load_bench(output)
+    assert find_sarlock_candidates(recovered) == ()
+    validation = validate_key(
+        original,
+        recovered,
+        key_inputs=(),
+        key=(),
+    )
+    assert validation.passed

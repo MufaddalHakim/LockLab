@@ -81,6 +81,59 @@ class SfllHd0Candidate:
 
 
 @dataclass(frozen=True)
+class SarLockMapping:
+    """One SARLock runtime comparison and its planted-key mask literal."""
+
+    key_input: str
+    protected_input: str
+    correct_bit: int
+    comparator_signal: str
+    mask_literal_signal: str
+
+
+@dataclass(frozen=True)
+class SarLockCandidate:
+    """One circuit region matching LockLab's explicit SARLock topology."""
+
+    protected_output: str
+    protected_source: str
+    flip_signal: str
+    input_match_signal: str
+    key_mask_signal: str
+    mappings: tuple[SarLockMapping, ...]
+
+    @property
+    def key_size(self) -> int:
+        return len(self.mappings)
+
+    @property
+    def key_inputs(self) -> tuple[str, ...]:
+        return tuple(mapping.key_input for mapping in self.mappings)
+
+    @property
+    def protected_inputs(self) -> tuple[str, ...]:
+        return tuple(mapping.protected_input for mapping in self.mappings)
+
+    @property
+    def inferred_key(self) -> tuple[int, ...]:
+        return tuple(mapping.correct_bit for mapping in self.mappings)
+
+    @property
+    def inferred_key_string(self) -> str:
+        return "".join(str(bit) for bit in self.inferred_key)
+
+
+@dataclass(frozen=True)
+class SarLockRemoval:
+    """Circuit and summary produced by bypassing structural SARLock matches."""
+
+    circuit: Circuit
+    candidates: tuple[SarLockCandidate, ...]
+    removed_gate_count: int
+    removed_inputs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SignalProbabilityScore:
     """Signal probability skew and gate-input ADS for one gate output."""
 
@@ -205,6 +258,69 @@ def find_sfll_hd0_candidates(circuit: Circuit) -> tuple[SfllHd0Candidate, ...]:
     return tuple(candidates)
 
 
+def find_sarlock_candidates(circuit: Circuit) -> tuple[SarLockCandidate, ...]:
+    """Find explicit SARLock comparator/mask topology without names or metadata."""
+
+    circuit.validate()
+    drivers = {gate.output: gate for gate in circuit.gates}
+    primary_inputs = set(circuit.inputs)
+    candidates: list[SarLockCandidate] = []
+
+    for injection_gate in circuit.topological_gates():
+        if (
+            injection_gate.kind != "XOR"
+            or len(injection_gate.inputs) != 2
+            or injection_gate.output not in circuit.outputs
+        ):
+            continue
+
+        for flip_index, flip_signal in enumerate(injection_gate.inputs):
+            flip_gate = drivers.get(flip_signal)
+            if (
+                flip_gate is None
+                or flip_gate.kind != "AND"
+                or len(flip_gate.inputs) != 2
+            ):
+                continue
+
+            for match_index, input_match_signal in enumerate(flip_gate.inputs):
+                comparisons = _runtime_equality_comparisons(
+                    input_match_signal,
+                    drivers,
+                    primary_inputs=primary_inputs,
+                )
+                if comparisons is None:
+                    continue
+
+                key_mask_signal = flip_gate.inputs[1 - match_index]
+                mask_literals = _sarlock_mask_literals(
+                    key_mask_signal,
+                    drivers,
+                    primary_inputs=primary_inputs,
+                )
+                if mask_literals is None:
+                    continue
+                mappings = _map_sarlock_comparisons(
+                    comparisons,
+                    mask_literals,
+                )
+                if mappings is None:
+                    continue
+
+                candidates.append(
+                    SarLockCandidate(
+                        protected_output=injection_gate.output,
+                        protected_source=injection_gate.inputs[1 - flip_index],
+                        flip_signal=flip_signal,
+                        input_match_signal=input_match_signal,
+                        key_mask_signal=key_mask_signal,
+                        mappings=mappings,
+                    )
+                )
+
+    return tuple(candidates)
+
+
 def signal_probability_scores(
     circuit: Circuit,
 ) -> tuple[SignalProbabilityScore, ...]:
@@ -252,6 +368,13 @@ class _StripLiteral:
     signal: str
     data_input: str
     protected_bit: int
+
+
+@dataclass(frozen=True)
+class _SarLockMaskLiteral:
+    signal: str
+    key_input: str
+    correct_bit: int
 
 
 def _runtime_equality_comparisons(
@@ -417,6 +540,102 @@ def _map_sfll_comparisons(
     return tuple(mappings)
 
 
+def _sarlock_mask_literals(
+    signal: str,
+    drivers: dict[str, Gate],
+    *,
+    primary_inputs: set[str],
+) -> tuple[_SarLockMaskLiteral, ...] | None:
+    visited: set[str] = set()
+
+    def visit(current: str) -> tuple[_SarLockMaskLiteral, ...] | None:
+        if current in visited:
+            return None
+        visited.add(current)
+
+        if current in primary_inputs:
+            return (_SarLockMaskLiteral(current, current, 0),)
+
+        gate = drivers.get(current)
+        if gate is None:
+            return None
+        if (
+            gate.kind in {"BUF", "NOT"}
+            and len(gate.inputs) == 1
+            and gate.inputs[0] in primary_inputs
+        ):
+            return (
+                _SarLockMaskLiteral(
+                    signal=current,
+                    key_input=gate.inputs[0],
+                    correct_bit=1 if gate.kind == "NOT" else 0,
+                ),
+            )
+        if gate.kind != "OR":
+            return None
+
+        literals: list[_SarLockMaskLiteral] = []
+        for gate_input in gate.inputs:
+            branch = visit(gate_input)
+            if branch is None:
+                return None
+            literals.extend(branch)
+        return tuple(literals)
+
+    literals = visit(signal)
+    if literals is None or not literals:
+        return None
+    if len({literal.key_input for literal in literals}) != len(literals):
+        return None
+    return literals
+
+
+def _map_sarlock_comparisons(
+    comparisons: tuple[_EqualityComparison, ...],
+    mask_literals: tuple[_SarLockMaskLiteral, ...],
+) -> tuple[SarLockMapping, ...] | None:
+    if len(comparisons) != len(mask_literals):
+        return None
+
+    literals_by_key = {
+        literal.key_input: literal for literal in mask_literals
+    }
+    mappings: list[SarLockMapping] = []
+    protected_inputs: set[str] = set()
+    matched_keys: set[str] = set()
+
+    for comparison in comparisons:
+        key_sides = [
+            signal for signal in comparison.inputs if signal in literals_by_key
+        ]
+        if len(key_sides) != 1:
+            return None
+        key_input = key_sides[0]
+        protected_input = next(
+            signal for signal in comparison.inputs if signal != key_input
+        )
+        literal = literals_by_key[key_input]
+        if protected_input in protected_inputs or key_input in matched_keys:
+            return None
+        protected_inputs.add(protected_input)
+        matched_keys.add(key_input)
+        mappings.append(
+            SarLockMapping(
+                key_input=key_input,
+                protected_input=protected_input,
+                correct_bit=literal.correct_bit,
+                comparator_signal=comparison.signal,
+                mask_literal_signal=literal.signal,
+            )
+        )
+
+    if matched_keys != set(literals_by_key):
+        return None
+    if protected_inputs & matched_keys:
+        return None
+    return tuple(mappings)
+
+
 def _gate_probability(kind: str, values: tuple[float, ...]) -> float:
     if kind == "BUF":
         probability = values[0]
@@ -508,6 +727,76 @@ def remove_antisat(circuit: Circuit) -> AntiSatRemoval:
     )
     recovered.validate()
     return AntiSatRemoval(
+        circuit=recovered,
+        candidates=candidates,
+        removed_gate_count=len(circuit.gates) - len(recovered.gates),
+        removed_inputs=removed_inputs,
+    )
+
+
+def remove_sarlock(circuit: Circuit) -> SarLockRemoval:
+    """Bypass exact SARLock matches and prune their unreachable logic."""
+
+    circuit.validate()
+    candidates = find_sarlock_candidates(circuit)
+    if not candidates:
+        raise CircuitError("no matching explicit SARLock structure found")
+
+    candidates_by_output = {
+        candidate.protected_output: candidate for candidate in candidates
+    }
+    if len(candidates_by_output) != len(candidates):
+        raise CircuitError("multiple SARLock candidates drive the same output")
+
+    rewritten_gates: list[Gate] = []
+    replaced_outputs: set[str] = set()
+    for gate in circuit.topological_gates():
+        candidate = candidates_by_output.get(gate.output)
+        if (
+            candidate is not None
+            and gate.kind == "XOR"
+            and set(gate.inputs)
+            == {candidate.protected_source, candidate.flip_signal}
+        ):
+            rewritten_gates.append(
+                Gate(
+                    name=gate.name,
+                    kind="BUF",
+                    inputs=(candidate.protected_source,),
+                    output=gate.output,
+                )
+            )
+            replaced_outputs.add(gate.output)
+        else:
+            rewritten_gates.append(gate)
+
+    if replaced_outputs != set(candidates_by_output):
+        raise CircuitError("could not bypass every SARLock candidate")
+
+    retained_gates, needed_signals = _prune_to_outputs(
+        tuple(rewritten_gates),
+        circuit.outputs,
+    )
+    suspected_key_inputs = {
+        key_input for candidate in candidates for key_input in candidate.key_inputs
+    }
+    retained_inputs = tuple(
+        name
+        for name in circuit.inputs
+        if name not in suspected_key_inputs or name in needed_signals
+    )
+    removed_inputs = tuple(
+        name for name in circuit.inputs if name not in retained_inputs
+    )
+
+    recovered = Circuit(
+        name=f"{circuit.name}_sarlock_removed",
+        inputs=retained_inputs,
+        outputs=circuit.outputs,
+        gates=retained_gates,
+    )
+    recovered.validate()
+    return SarLockRemoval(
         circuit=recovered,
         candidates=candidates,
         removed_gate_count=len(circuit.gates) - len(recovered.gates),

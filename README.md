@@ -7,8 +7,9 @@ logic-locking gates, and validates candidate keys.
 The current version implements Random Logic Locking (RLL), MUX-based locking,
 type-0 Anti-SAT, SARLock, SFLL-HD0, and general SFLL-HDh defenses; exact and
 approximate oracle-guided SAT attacks; structural and functional SFLL-HD0
-analysis; and structural and signal-probability Anti-SAT analysis. All commands
-use the same circuit model and parsers.
+analysis; structural SARLock analysis and removal; and structural and
+signal-probability Anti-SAT analysis. All commands use the same circuit model
+and parsers.
 
 ## Setup
 
@@ -317,6 +318,59 @@ This is an exact structural-signature experiment for LockLab's type-0
 construction, not a general signal-probability-skew implementation. An
 obfuscated or synthesized implementation may not retain the same topology, so
 zero candidates does not prove that a circuit contains no Anti-SAT logic.
+
+## Run structural SARLock analysis and removal
+
+The structural command locates LockLab's explicit SARLock comparator, planted-
+key mask, flip gate, and output-injection XOR without reading lock metadata:
+
+```bash
+locklab attack sarlock-structural outputs/c432_locked.bench
+```
+
+It reports the protected output and source, selected primary inputs, suspected
+key inputs, and key-to-input mapping. Because each mask literal explicitly
+tests whether one runtime key bit differs from its planted value, the command
+also infers the planted key. The analysis uses connectivity and gate polarity,
+not internal signal names. It is read-only and creates no files.
+
+The removal command replaces only a confidently matched output-injection XOR
+with the original protected source, then prunes unreachable SARLock gates and
+key inputs:
+
+```bash
+locklab attack sarlock-remove outputs/c432_locked.bench
+```
+
+For this input, the recovered circuit is written to
+`outputs/c432_sarlock_removed.bench`. No metadata or attack-result log is
+created. Tests formally compare the recovered circuits with every bundled
+ISCAS-85 benchmark.
+
+These commands demonstrate the standalone removal limitation identified in the
+[original SARLock paper](https://doi.org/10.1109/HST.2016.7495588). They match
+LockLab's explicit reference topology and its ordinary two-input decomposition
+after Verilog loading. Aggressive synthesis such as whole-circuit ABC may absorb
+or rewrite the boundary; in that case the commands deliberately report no
+candidate instead of claiming a removal. Zero matches therefore do not prove
+that SARLock is absent.
+
+To compare exact SAT, AppSAT, structural recognition, and formally checked
+removal across the larger bundled benchmarks, first inspect and then run the
+dedicated matrix:
+
+```bash
+locklab study configs/sarlock_comparison.json --dry-run
+locklab study configs/sarlock_comparison.json
+```
+
+Use `--limit N` for a bounded pilot. The configuration covers c432, c880, and
+c1908 with 4- and 8-bit keys, three seeds, and two AppSAT thresholds. Its JSONL
+and CSV records include exact/AppSAT solver measurements plus
+`sarlock_structural_candidates`, removed gate/input counts, and formal
+equivalence of the recovered circuit. The smaller c17 circuit is covered by the
+SARLock test suite because it has only five primary inputs and cannot support
+the matrix's 8-bit key.
 
 ## Run structural SFLL-HD0 analysis
 

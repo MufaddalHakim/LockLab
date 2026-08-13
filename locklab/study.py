@@ -14,7 +14,9 @@ from typing import Any
 
 from locklab.analysis import (
     find_antisat_candidates,
+    find_sarlock_candidates,
     find_sfll_hd0_candidates,
+    remove_sarlock,
     signal_probability_scores,
 )
 from locklab.circuit import Circuit, CircuitError
@@ -150,6 +152,12 @@ SUMMARY_FIELDS = (
     "sps_target_signal",
     "sps_target_rank",
     "antisat_structural_candidates",
+    "sarlock_structural_candidates",
+    "sarlock_removal_status",
+    "sarlock_removal_gates",
+    "sarlock_removal_inputs",
+    "sarlock_removal_formal_equivalent",
+    "sarlock_removal_seconds",
     "sfll_exact_candidates",
     "sfll_functional_candidates",
     "total_seconds",
@@ -441,8 +449,10 @@ def _run_case(
         phase = "structural-analysis"
         analysis_started = time.perf_counter()
         antisat_candidates = find_antisat_candidates(locked)
+        sarlock_candidates = find_sarlock_candidates(locked)
         sfll_exact_candidates = find_sfll_hd0_candidates(locked)
         metrics["antisat_structural_candidates"] = len(antisat_candidates)
+        metrics["sarlock_structural_candidates"] = len(sarlock_candidates)
         metrics["sfll_exact_candidates"] = len(sfll_exact_candidates)
         if case.scheme == "sfll-hd0":
             metrics["sfll_functional_candidates"] = len(
@@ -457,6 +467,43 @@ def _run_case(
         metrics["structural_analysis_seconds"] = (
             time.perf_counter() - analysis_started
         )
+
+        if case.scheme == "sarlock":
+            phase = "sarlock-removal"
+            removal_started = time.perf_counter()
+            try:
+                removal = remove_sarlock(locked)
+                removal_proof = prove_key_equivalence(
+                    oracle,
+                    removal.circuit,
+                    key_inputs=(),
+                    key=(),
+                    solver_timeout_seconds=configuration.solver_timeout_seconds,
+                )
+                metrics.update(
+                    {
+                        "sarlock_removal_status": "completed",
+                        "sarlock_removal_gates": removal.removed_gate_count,
+                        "sarlock_removal_inputs": len(removal.removed_inputs),
+                        "sarlock_removal_formal_equivalent": (
+                            removal_proof.passed
+                        ),
+                    }
+                )
+                if not removal_proof.passed:
+                    raise CircuitError(
+                        "SARLock removal failed formal equivalence"
+                    )
+            except (CircuitError, SatSolverError) as error:
+                metrics["sarlock_removal_status"] = (
+                    _measurement_failure_status(error)
+                )
+                anomalies.append(_anomaly(phase, error))
+            metrics["sarlock_removal_seconds"] = (
+                time.perf_counter() - removal_started
+            )
+        else:
+            metrics["sarlock_removal_status"] = "not-applicable"
 
         phase = "sps-analysis"
         sps_started = time.perf_counter()

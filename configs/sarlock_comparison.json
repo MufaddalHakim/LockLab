@@ -1,0 +1,27 @@
+{
+  "name": "sarlock_comparison",
+  "benchmark_root": "../benchmarks/sources/iscas85",
+  "benchmarks": [
+    "c432",
+    "c880",
+    "c1908"
+  ],
+  "seeds": [
+    1,
+    7,
+    42
+  ],
+  "schemes": [
+    {
+      "name": "sarlock",
+      "key_sizes": [4, 8]
+    }
+  ],
+  "exact_sat": true,
+  "appsat": {
+    "enabled": true,
+    "samples": 256,
+    "thresholds": [0.01, 0.05]
+  },
+  "solver_timeout_seconds": 30
+}

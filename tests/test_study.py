@@ -22,6 +22,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ROOT = REPOSITORY_ROOT / "benchmarks/sources/iscas85"
 SMOKE_CONFIGURATION = REPOSITORY_ROOT / "configs/comparative_smoke.json"
 FULL_CONFIGURATION = REPOSITORY_ROOT / "configs/comparative_matrix.json"
+SARLOCK_CONFIGURATION = REPOSITORY_ROOT / "configs/sarlock_comparison.json"
 
 
 def _write_configuration(
@@ -67,6 +68,19 @@ def test_tracked_study_configurations_expand_deterministically() -> None:
     assert len({case.identifier for case in first_smoke}) == 7
     assert len(full_cases) == 312
     assert full.benchmark_root == BENCHMARK_ROOT
+
+
+def test_sarlock_comparison_configuration_expands_deterministically() -> None:
+    configuration = load_study_configuration(SARLOCK_CONFIGURATION)
+
+    first = expand_study_cases(configuration)
+    second = expand_study_cases(configuration)
+
+    assert first == second
+    assert len(first) == 36
+    assert len({case.identifier for case in first}) == 36
+    assert {case.scheme for case in first} == {"sarlock"}
+    assert {case.benchmark for case in first} == {"c432", "c880", "c1908"}
 
 
 def test_study_configuration_rejects_hd_without_distances(tmp_path: Path) -> None:
@@ -117,6 +131,56 @@ def test_study_runs_sarlock_case(tmp_path: Path) -> None:
     assert result.status_counts == {"completed": 1}
     assert record["case"]["scheme"] == "sarlock"
     assert record["metrics"]["formal_equivalent"] is True
+    assert record["metrics"]["sarlock_structural_candidates"] == 1
+    assert record["metrics"]["sarlock_removal_status"] == "completed"
+    assert record["metrics"]["sarlock_removal_inputs"] == 2
+    assert record["metrics"]["sarlock_removal_formal_equivalent"] is True
+
+
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for SARLock attack comparison",
+)
+def test_study_compares_exact_appsat_and_sarlock_removal(
+    tmp_path: Path,
+) -> None:
+    configuration_path = tmp_path / "sarlock-attacks.json"
+    configuration_path.write_text(
+        json.dumps(
+            {
+                "name": "sarlock_attacks",
+                "benchmark_root": str(BENCHMARK_ROOT),
+                "benchmarks": ["c17"],
+                "seeds": [42],
+                "schemes": [{"name": "sarlock", "key_sizes": [4]}],
+                "exact_sat": True,
+                "appsat": {
+                    "enabled": True,
+                    "samples": 32,
+                    "thresholds": [0.01],
+                },
+                "solver_timeout_seconds": 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_comparative_study(
+        configuration_path,
+        output_directory=tmp_path / "runs",
+    )
+    record = json.loads(result.raw_path.read_text(encoding="utf-8"))
+    metrics = record["metrics"]
+
+    assert result.status_counts == {"completed": 1}
+    assert metrics["exact_status"] == "completed"
+    assert metrics["exact_distinguishing_inputs"] == 15
+    assert metrics["exact_functionally_equivalent"] is True
+    assert metrics["appsat_status"] == "completed"
+    assert isinstance(metrics["appsat_formal_equivalent"], bool)
+    assert metrics["sarlock_structural_candidates"] == 1
+    assert metrics["sarlock_removal_status"] == "completed"
+    assert metrics["sarlock_removal_formal_equivalent"] is True
 
 
 def test_study_records_unsupported_cases_without_solver(tmp_path: Path) -> None:
