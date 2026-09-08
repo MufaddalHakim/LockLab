@@ -32,12 +32,13 @@ def _write_configuration(
     scheme: str = "rll",
     key_size: int = 2,
     exact_sat: bool = False,
+    benchmark_root: Path = BENCHMARK_ROOT,
 ) -> None:
     path.write_text(
         json.dumps(
             {
                 "name": name,
-                "benchmark_root": str(BENCHMARK_ROOT),
+                "benchmark_root": str(benchmark_root),
                 "benchmarks": ["c17"],
                 "seeds": [1],
                 "schemes": [
@@ -240,6 +241,52 @@ def test_study_resume_does_not_repeat_completed_case(tmp_path: Path) -> None:
     assert rows[0]["scheme"] == "rll"
     assert rows[0]["formal_equivalent"] == "True"
     assert rows[0]["exact_status"] == "not-requested"
+
+
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for study execution",
+)
+@pytest.mark.parametrize("retry_failures", (False, True))
+@pytest.mark.parametrize("change", ("modified", "deleted"))
+def test_study_rejects_resume_after_benchmark_changes(
+    tmp_path: Path,
+    retry_failures: bool,
+    change: str,
+) -> None:
+    benchmark = tmp_path / "c17.bench"
+    benchmark.write_text("INPUT(a)\nOUTPUT(y)\ny = NOT(a)\n", encoding="utf-8")
+    configuration_path = tmp_path / "changed.json"
+    _write_configuration(
+        configuration_path,
+        name="changed",
+        key_size=1,
+        benchmark_root=tmp_path,
+    )
+    result = run_comparative_study(
+        configuration_path,
+        output_directory=tmp_path / "runs",
+    )
+    assert result.status_counts == {"completed": 1}
+    raw_before = result.raw_path.read_bytes()
+    summary_before = result.summary_path.read_bytes()
+
+    if change == "modified":
+        benchmark.write_text("INPUT(a)\nOUTPUT(y)\ny = BUF(a)\n", encoding="utf-8")
+        message = "benchmark c17 does not match existing study records"
+    else:
+        benchmark.unlink()
+        message = "cannot verify benchmark"
+
+    with pytest.raises(CircuitError, match=message):
+        run_comparative_study(
+            configuration_path,
+            output_directory=tmp_path / "runs",
+            retry_failures=retry_failures,
+        )
+
+    assert result.raw_path.read_bytes() == raw_before
+    assert result.summary_path.read_bytes() == summary_before
 
 
 def test_study_cli_dry_run_creates_no_files(tmp_path: Path) -> None:

@@ -303,7 +303,6 @@ def run_comparative_study(
     if limit is not None:
         if limit <= 0:
             raise CircuitError("study case limit must be greater than zero")
-        cases = cases[:limit]
 
     destination = (
         output_directory.expanduser().resolve()
@@ -326,6 +325,37 @@ def run_comparative_study(
             "existing study records use a different configuration; "
             "choose a new study name or remove the old generated run files"
         )
+
+    # Check all recorded cases before appending anything, including when limited
+    # or retrying failures, so a study cannot mix different benchmark contents.
+    benchmark_digests: dict[str, str] = {}
+    for case in cases:
+        previous = existing.get(case.identifier)
+        if previous is None:
+            continue
+        metrics = previous.get("metrics", {})
+        recorded_digest = metrics.get("benchmark_sha256")
+        if recorded_digest is None and previous.get("status") != "completed":
+            # A failed load may have produced no benchmark measurements yet.
+            continue
+        if case.benchmark not in benchmark_digests:
+            benchmark_path = configuration.benchmark_root / f"{case.benchmark}.bench"
+            try:
+                benchmark_digests[case.benchmark] = hashlib.sha256(
+                    benchmark_path.read_bytes()
+                ).hexdigest()
+            except OSError as error:
+                raise CircuitError(
+                    f"cannot verify benchmark {benchmark_path} for study resume: {error}"
+                ) from error
+        if recorded_digest != benchmark_digests[case.benchmark]:
+            raise CircuitError(
+                f"benchmark {case.benchmark} does not match existing study records; "
+                "choose a new study name for the changed benchmark"
+            )
+
+    if limit is not None:
+        cases = cases[:limit]
 
     executed_cases = 0
     skipped_existing = 0
