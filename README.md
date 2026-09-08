@@ -64,11 +64,18 @@ locklab lock benchmarks/sources/iscas85/c17.v \
 The command creates only two files:
 
 - `outputs/c17_locked.v`: the locked circuit;
-- `outputs/c17_locked.lock.json`: the correct key, seed, and inserted key gates.
+- `outputs/c17_locked.v.lock.json`: the correct key, seed, and inserted key gates.
 
 The `outputs/` directory is used by default so generated circuits do not
 clutter the repository root. Rerunning the command replaces the previous
 locked circuit and metadata for the same input filename.
+
+Metadata filenames keep the circuit extension: BENCH output uses
+`c17_locked.bench.lock.json`, so it can coexist with the Verilog output.
+Legacy names such as `c17_locked.lock.json` are no longer read because they
+could belong to either format. Rerun the original lock command to regenerate
+metadata under the new name; existing circuits can still be formally validated
+without metadata.
 
 The generated file is reloaded and validated with its correct key before the
 command reports success. Small circuits are checked exhaustively; circuits with
@@ -566,8 +573,11 @@ locklab study configs/comparative_matrix.json --limit 12
 ```
 
 Every raw record is flushed immediately. Rerunning the same command skips
-recorded cases and resumes at the first missing one. To rerun only non-completed
-records, use:
+recorded cases and resumes at the first missing one. Before resuming, LockLab
+checks the saved benchmark hashes against the current files. Changed or missing
+benchmarks stop the run without altering existing results; use a new study name
+when changing benchmark contents. This check also applies with `--limit` and
+`--retry-failures`. To rerun only non-completed records, use:
 
 ```bash
 locklab study configs/comparative_matrix.json --retry-failures

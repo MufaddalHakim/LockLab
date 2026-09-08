@@ -51,7 +51,7 @@ def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
 
     assert locked.returncode == 0, locked.stderr
     assert "Validation: PASS" in locked.stdout
-    metadata_path = locked_path.with_suffix(".lock.json")
+    metadata_path = locked_path.with_name(locked_path.name + ".lock.json")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["scheme"] == scheme
     if scheme == "mux":
@@ -135,9 +135,74 @@ def test_cli_locks_and_validates_bench(tmp_path: Path, scheme: str) -> None:
         assert "Validation: PASS (formal SAT miter UNSAT)" in attacked.stdout
 
 
-def test_attack_classification_reports_exact_key(tmp_path: Path) -> None:
+@pytest.mark.skipif(
+    shutil.which("yosys") is None or shutil.which("yices-sat") is None,
+    reason="Yosys and Yices are required for cross-format lock validation",
+)
+@pytest.mark.parametrize("verilog_key_size", (2, 3))
+def test_cli_keeps_bench_and_verilog_metadata_separate(
+    tmp_path: Path,
+    verilog_key_size: int,
+) -> None:
+    saved_metadata: dict[Path, bytes] = {}
+    for source, key_size, seed in (
+        (C17_BENCH, 2, 42),
+        (C17_BENCH.with_suffix(".v"), verilog_key_size, 7),
+    ):
+        result = subprocess.run(
+            (
+                sys.executable, "-m", "locklab", "lock", str(source),
+                "--scheme", "rll", "--key-size", str(key_size), "--seed", str(seed),
+            ),
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        metadata_path = tmp_path / f"outputs/c17_locked{source.suffix}.lock.json"
+        saved_metadata[metadata_path] = metadata_path.read_bytes()
+
+    assert {path.name for path in (tmp_path / "outputs").iterdir()} == {
+        "c17_locked.bench", "c17_locked.bench.lock.json",
+        "c17_locked.v", "c17_locked.v.lock.json",
+    }
+    for metadata_path, contents in saved_metadata.items():
+        assert metadata_path.read_bytes() == contents
+        key = json.loads(contents)["key"]
+        locked_path = metadata_path.with_name(metadata_path.name.removesuffix(".lock.json"))
+        validated = subprocess.run(
+            (
+                sys.executable, "-m", "locklab", "validate", str(C17_BENCH),
+                str(locked_path), "--key", key,
+            ),
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert validated.returncode == 0, validated.stderr
+        assert "PASS: exact planted key is formally equivalent" in validated.stdout
+        assert _attack_key_classification(locked_path, tuple(map(int, key))) == (
+            "Classification: exact planted key",
+        )
+
+
+def test_attack_classification_ignores_ambiguous_legacy_metadata(tmp_path: Path) -> None:
     locked_path = tmp_path / "locked.bench"
     locked_path.with_suffix(".lock.json").write_text(
+        json.dumps({"key": "101"}),
+        encoding="utf-8",
+    )
+
+    assert _attack_key_classification(locked_path, (0,)) == (
+        "Classification: unavailable (no lock metadata)",
+    )
+
+
+def test_attack_classification_reports_exact_key(tmp_path: Path) -> None:
+    locked_path = tmp_path / "locked.bench"
+    locked_path.with_name(locked_path.name + ".lock.json").write_text(
         json.dumps({"key": "101"}),
         encoding="utf-8",
     )
@@ -229,7 +294,7 @@ def test_cli_sfll_hd_reproduces_identical_outputs(tmp_path: Path) -> None:
     )
     assert first.returncode == 0, first.stderr
     circuit_path = tmp_path / "outputs/c17_locked.bench"
-    metadata_path = circuit_path.with_suffix(".lock.json")
+    metadata_path = circuit_path.with_name(circuit_path.name + ".lock.json")
     first_circuit = circuit_path.read_bytes()
     first_metadata = metadata_path.read_bytes()
 
@@ -248,7 +313,7 @@ def test_cli_sfll_hd_reproduces_identical_outputs(tmp_path: Path) -> None:
 
 def test_attack_classification_reports_changed_insertions(tmp_path: Path) -> None:
     locked_path = tmp_path / "locked.bench"
-    locked_path.with_suffix(".lock.json").write_text(
+    locked_path.with_name(locked_path.name + ".lock.json").write_text(
         json.dumps(
             {
                 "key": "101",
@@ -292,7 +357,7 @@ def test_attack_classification_reports_compound_component_distances(
     tmp_path: Path,
 ) -> None:
     locked_path = tmp_path / "locked.bench"
-    locked_path.with_suffix(".lock.json").write_text(
+    locked_path.with_name(locked_path.name + ".lock.json").write_text(
         json.dumps(
             {
                 "key": "10100110",

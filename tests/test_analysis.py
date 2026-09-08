@@ -402,7 +402,7 @@ def test_cli_reports_sfll_cube_without_metadata_or_files(tmp_path: Path) -> None
             f"(cube bit {insertion.correct_bit})"
         )
         assert expected in result.stdout
-    assert not locked_path.with_suffix(".lock.json").exists()
+    assert not locked_path.with_name(locked_path.name + ".lock.json").exists()
     assert set(tmp_path.rglob("*")) == files_before
 
 
@@ -728,7 +728,7 @@ def test_cli_removes_antisat_to_outputs_without_metadata(tmp_path: Path) -> None
     assert "Removed Anti-SAT blocks: 1" in result.stdout
     assert "Removed suspected key inputs: 4" in result.stdout
     assert output.is_file()
-    assert not output.with_suffix(".lock.json").exists()
+    assert not output.with_name(output.name + ".lock.json").exists()
     assert find_antisat_candidates(load_bench(output)) == ()
 
 
@@ -940,7 +940,7 @@ def test_cli_removes_sarlock_to_outputs_without_metadata(tmp_path: Path) -> None
     assert "Removed SARLock blocks: 1" in result.stdout
     assert "Removed suspected key inputs: 4" in result.stdout
     assert output.is_file()
-    assert not output.with_suffix(".lock.json").exists()
+    assert not output.with_name(output.name + ".lock.json").exists()
     recovered = load_bench(output)
     assert find_sarlock_candidates(recovered) == ()
     validation = validate_key(

@@ -94,7 +94,7 @@ def test_validate_cli_classifies_key_outcomes(
     candidate_path = tmp_path / "locked.bench"
     write_bench(reference, reference_path)
     write_bench(candidate, candidate_path)
-    candidate_path.with_suffix(".lock.json").write_text(
+    candidate_path.with_name(candidate_path.name + ".lock.json").write_text(
         json.dumps({"key": "00"}),
         encoding="utf-8",
     )

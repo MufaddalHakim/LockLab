@@ -483,5 +483,5 @@ def test_fall_cli_is_read_only_and_reports_recovery(tmp_path: Path) -> None:
     assert "Recovery method: distance2h" in result.stdout
     assert f"Recovered key: {locked.key_string}" in result.stdout
     assert "Oracle confirmation: PASS" in result.stdout
-    assert not locked_path.with_suffix(".lock.json").exists()
+    assert not locked_path.with_name(locked_path.name + ".lock.json").exists()
     assert set(tmp_path.rglob("*")) == files_before

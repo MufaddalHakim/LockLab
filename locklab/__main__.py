@@ -366,7 +366,7 @@ def _run_study(args: argparse.Namespace) -> None:
 
 def _run_lock(args: argparse.Namespace) -> None:
     output = _default_lock_output(args.circuit)
-    metadata = output.with_suffix(".lock.json")
+    metadata = output.with_name(output.name + ".lock.json")
 
     if args.scheme == "sfll-hd" and args.hamming_distance is None:
         raise CircuitError(
@@ -844,7 +844,7 @@ def _read_planted_key(candidate: Path) -> tuple[int, ...] | None:
 
 
 def _read_lock_metadata(candidate: Path) -> dict[str, object] | None:
-    metadata_path = candidate.with_suffix(".lock.json")
+    metadata_path = candidate.with_name(candidate.name + ".lock.json")
     if not metadata_path.is_file():
         return None
     try:
