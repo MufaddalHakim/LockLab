@@ -282,6 +282,10 @@ equivalent alternative. Alternative results include the changed key-bit indices
 and their protected signals. Solver CNF files are temporary and no attack-result
 files are created.
 
+For SAT and AppSAT, reported solver-call counts cover key recovery and exclude
+the final equivalence proof. The configured per-call solver timeout also applies
+to that proof.
+
 ## Run an approximate SAT attack
 
 AppSAT can stop before exact SAT convergence when sampled functional error stays

@@ -1,11 +1,13 @@
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from locklab.bench import load_bench
 from locklab.locking import lock_antisat, lock_mux, lock_rll, lock_rll_antisat
 from locklab.sat_attack import appsat_attack, sat_attack
+from locklab.sat_solver import solve_cnf
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,27 @@ pytestmark = pytest.mark.skipif(
     shutil.which("yices-sat") is None,
     reason="Yices SAT is required for attack tests",
 )
+
+
+@pytest.mark.parametrize("attack", (sat_attack, appsat_attack))
+def test_attack_uses_configured_timeout_for_final_validation(attack) -> None:
+    oracle = load_bench(C17_BENCH)
+    locked = lock_rll(oracle, key_size=2, seed=42)
+    with (
+        patch("locklab.sat_attack.solve_cnf", wraps=solve_cnf) as recovery_solver,
+        patch("locklab.validation.solve_cnf", wraps=solve_cnf) as validation_solver,
+    ):
+        result = attack(locked.circuit, oracle, solver_timeout_seconds=7.5)
+
+    assert result.validation.passed
+    assert validation_solver.call_count == 1
+    assert validation_solver.call_args.kwargs["timeout_seconds"] == 7.5
+    assert all(
+        call.kwargs["timeout_seconds"] == 7.5
+        for call in recovery_solver.call_args_list
+    )
+    # Report key-recovery calls separately from the final equivalence proof.
+    assert result.solver_calls == recovery_solver.call_count
 
 
 @pytest.mark.parametrize(

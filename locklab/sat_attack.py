@@ -108,6 +108,7 @@ def sat_attack(
         locked,
         key_inputs=key_inputs,
         key=key,
+        solver_timeout_seconds=solver_timeout_seconds,
     )
     if not validation.passed:
         raise CircuitError("SAT attack candidate key failed functional validation")
@@ -255,6 +256,7 @@ def appsat_attack(
         locked,
         key_inputs=key_inputs,
         key=key,
+        solver_timeout_seconds=solver_timeout_seconds,
     )
     return AppSatAttackResult(
         key_inputs=key_inputs,
