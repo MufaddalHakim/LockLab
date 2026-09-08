@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from locklab.bench import load_bench
+from locklab.bench import load_bench, parse_bench
 from locklab.locking import lock_mux, lock_sarlock, lock_sfll_hd, lock_sfll_hd0
 from locklab.validation import validate_key
 from locklab.verilog import circuit_from_yosys_json, load_verilog, write_verilog
@@ -40,6 +40,33 @@ def test_verilog_round_trip_preserves_behavior(tmp_path: Path) -> None:
     for vector in range(32):
         bits = f"{vector:05b}"
         values = dict(zip(original.inputs, map(int, bits)))
+        assert copied.evaluate(values) == original.evaluate(values)
+
+
+def test_verilog_round_trip_preserves_reserved_names_and_constants(tmp_path: Path) -> None:
+    original = parse_bench(
+        """INPUT(wire)
+INPUT(logic)
+INPUT(case)
+OUTPUT(endmodule)
+OUTPUT(parameter)
+reg = AND(wire, 1)
+always = MUX(reg, 0, case)
+endmodule = XOR(always, logic)
+parameter = BUF(1)
+""",
+        name="module",
+    )
+    output = tmp_path / "reserved.v"
+
+    write_verilog(original, output)
+    copied = load_verilog(output)
+
+    assert copied.name == original.name
+    assert copied.inputs == original.inputs
+    assert copied.outputs == original.outputs
+    for vector in range(8):
+        values = dict(zip(original.inputs, map(int, f"{vector:03b}")))
         assert copied.evaluate(values) == original.evaluate(values)
 
 

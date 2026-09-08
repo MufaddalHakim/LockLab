@@ -233,8 +233,8 @@ def circuit_from_yosys_json(payload: dict[str, Any]) -> Circuit:
 
 def write_verilog(circuit: Circuit, path: Path) -> None:
     circuit.validate()
-    port_lines = [f"    input wire {name}" for name in circuit.inputs]
-    port_lines.extend(f"    output wire {name}" for name in circuit.outputs)
+    port_lines = [f"    input wire {_verilog_token(name)}" for name in circuit.inputs]
+    port_lines.extend(f"    output wire {_verilog_token(name)}" for name in circuit.outputs)
     ports = ",\n".join(port_lines)
 
     internal_wires = [
@@ -242,23 +242,25 @@ def write_verilog(circuit: Circuit, path: Path) -> None:
         for gate in circuit.topological_gates()
         if gate.output not in circuit.outputs and gate.output not in circuit.inputs
     ]
-    wire_lines = "\n".join(f"    wire {name};" for name in internal_wires)
+    wire_lines = "\n".join(f"    wire {_verilog_token(name)};" for name in internal_wires)
 
     gate_lines: list[str] = []
     for index, gate in enumerate(circuit.topological_gates()):
         if gate.kind == "MUX":
-            data_a, data_b, select = gate.inputs
+            data_a, data_b, select = map(_verilog_token, gate.inputs)
             gate_lines.append(
-                f"    assign {gate.output} = {select} ? {data_b} : {data_a};"
+                f"    assign {_verilog_token(gate.output)} = {select} ? {data_b} : {data_a};"
             )
         else:
-            arguments = ", ".join((gate.output, *gate.inputs))
+            arguments = ", ".join(
+                _verilog_token(signal) for signal in (gate.output, *gate.inputs)
+            )
             gate_lines.append(f"    {gate.kind.lower()} g{index}({arguments});")
 
     sections = [
         "`default_nettype none",
         "",
-        f"module {circuit.name} (",
+        f"module {_verilog_token(circuit.name)}(",
         ports,
         ");",
     ]
@@ -267,6 +269,15 @@ def write_verilog(circuit: Circuit, path: Path) -> None:
     sections.extend(gate_lines)
     sections.extend(("endmodule", "", "`default_nettype wire", ""))
     path.write_text("\n".join(sections), encoding="utf-8")
+
+
+def _verilog_token(name: str) -> str:
+    """Escape identifiers (including keywords), leaving constants as literals."""
+
+    if name in {"0", "1"}:
+        return name
+    # Whitespace terminates a Verilog escaped identifier before punctuation.
+    return f"\\{name} "
 
 
 def _truthy_attribute(value: Any) -> bool:
