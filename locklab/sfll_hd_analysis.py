@@ -113,7 +113,7 @@ def find_sfll_hd_candidates(
     The candidate search handles LockLab's explicit strip-and-restore topology.
     The functional recovery itself is SAT based: it finds two active strip
     assignments at distance ``2h``, derives key bits using Lemmas 2 and 3, then
-    formally proves the proposed exact-distance strip function.
+    formally proves the proposed exact-distance strip and restore functions.
     """
 
     circuit.validate()
@@ -181,6 +181,18 @@ def find_sfll_hd_candidates(
                     solver_timeout_seconds=solver_timeout_seconds,
                 )
                 if recovery is None:
+                    continue
+
+                if not _prove_restore_exact_distance(
+                    circuit,
+                    restore_signal,
+                    pairs=tuple(
+                        (mapping.protected_input, mapping.key_input, mapping.comparator_signal)
+                        for mapping in mappings
+                    ),
+                    hamming_distance=hamming_distance,
+                    solver_timeout_seconds=solver_timeout_seconds,
+                ):
                     continue
 
                 candidate = SfllHdCandidate(

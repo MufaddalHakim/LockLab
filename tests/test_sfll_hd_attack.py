@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from math import comb
 from pathlib import Path
 
@@ -194,6 +195,33 @@ def test_fall_recovers_documented_sfll_hd_attack_cases(
         key_inputs=candidate.key_inputs,
         key=candidate.inferred_key,
     ).passed
+
+
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for FALL SAT queries",
+)
+@pytest.mark.parametrize("restore_kind", ("NOR", "AND"))
+def test_fall_rejects_incorrect_restore_function(restore_kind: str) -> None:
+    original = load_bench(BENCHMARK_ROOT / "c17.bench")
+    locked = lock_sfll_hd(original, key_size=4, hamming_distance=1, seed=42)
+    restore_gate = next(
+        gate for gate in locked.circuit.gates
+        if gate.output == locked.restore_match_signal
+    )
+    assert restore_gate.kind == "OR"
+    # Preserve comparator connectivity and the valid strip function, but break
+    # the restore function by complementing it or changing its truth table.
+    changed = replace(
+        locked.circuit,
+        gates=tuple(
+            replace(gate, kind=restore_kind) if gate == restore_gate else gate
+            for gate in locked.circuit.gates
+        ),
+    )
+    changed.validate()
+
+    assert find_sfll_hd_candidates(changed, hamming_distance=1) == ()
 
 
 @pytest.mark.skipif(
