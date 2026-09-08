@@ -458,6 +458,10 @@ def test_fall_does_not_claim_other_locking_schemes(scheme: str) -> None:
     assert find_sfll_hd_candidates(locked.circuit, hamming_distance=1) == ()
 
 
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for FALL negative controls",
+)
 def test_fall_rejects_parameters_outside_paper_applicability() -> None:
     original = load_bench(BENCHMARK_ROOT / "c17.bench")
     locked = lock_sfll_hd(
@@ -473,6 +477,10 @@ def test_fall_rejects_parameters_outside_paper_applicability() -> None:
     ) == ()
 
 
+@pytest.mark.skipif(
+    shutil.which("yices-sat") is None,
+    reason="Yices is required for FALL key confirmation",
+)
 def test_fall_cli_is_read_only_and_reports_recovery(tmp_path: Path) -> None:
     original = load_bench(BENCHMARK_ROOT / "c17.bench")
     locked = lock_sfll_hd(
